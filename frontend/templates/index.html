@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Playwright Robot Driver</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Playwright Robot Driver</h1>
+        <p>Enter a product to search:</p>
+        <input id="productInput" type="text" placeholder="e.g., Music">
+        <button id="searchBtn">Run Bot</button>
+        <pre id="output"></pre>
+    </div>
+
+    <script>
+        document.getElementById("searchBtn").addEventListener("click", async () => {
+            const product = document.getElementById("productInput").value;
+            document.getElementById("output").textContent = "Running automation...";
+
+            const response = await fetch("/search", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ product })
+            });
+
+            const data = await response.json();
+            if (data.status === "success") {
+                document.getElementById("output").textContent =
+                    `✅ Product: ${data.title}\n💲 Price: ${data.price}`;
+            } else {
+                document.getElementById("output").textContent =
+                    `❌ Error: ${data.message}`;
+            }
+        });
+    </script>
+</body>
+</html>
