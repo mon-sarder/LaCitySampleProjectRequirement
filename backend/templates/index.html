@@ -16,6 +16,7 @@
       </div>
     </header>
 
+    <!-- Product task -->
     <form id="botForm" class="card" autocomplete="off">
       <label for="productInput" class="label">Product</label>
       <div class="row">
@@ -29,7 +30,16 @@
         />
         <button id="runBtn" type="submit" class="btn">Run Bot</button>
       </div>
-      <p class="hint">This demo uses <em>Books to Scrape</em> and will open the first item.</p>
+      <p class="hint">This demo uses <em>Books to Scrape</em> and opens the first item in the chosen category.</p>
+    </form>
+
+    <!-- Login task -->
+    <form id="loginForm" class="card">
+      <p class="label">Demo Login Automation</p>
+      <div class="row">
+        <button id="loginBtn" type="button" class="btn">Run Login Test</button>
+      </div>
+      <p class="hint">Uses the public PracticeTestAutomation login page (username: <code>student</code>, password: <code>Password123</code>).</p>
     </form>
 
     <!-- Loading / status -->
@@ -53,6 +63,8 @@
     const form = document.getElementById("botForm");
     const runBtn = document.getElementById("runBtn");
     const input = document.getElementById("productInput");
+
+    const loginBtn = document.getElementById("loginBtn");
 
     const statusBox = document.getElementById("status");
     const statusText = document.getElementById("statusText");
@@ -82,60 +94,67 @@
         </svg>`;
     }
 
+    // Product task submit
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      await runAutomation(async () => {
+        const product = input.value.trim();
+        const res = await fetch("/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product })
+        });
+        return res.json();
+      });
+    });
+
+    // Login test click
+    loginBtn.addEventListener("click", async () => {
+      await runAutomation(async () => {
+        const res = await fetch("/login-test");
+        return res.json();
+      }, "Running login automation...");
+    });
+
+    async function runAutomation(task, statusMessage = "Running automation…") {
       hide(result);
       resultTitle.textContent = "";
       resultPrice.textContent = "";
       resultMeta.textContent = "";
       resultIcon.innerHTML = "";
 
-      const product = input.value.trim();
-      if (!product) return;
-
-      runBtn.disabled = true;
-      input.disabled = true;
-      show(statusBox);
-      statusText.textContent = "Running automation…";
+      runBtn.disabled = true; input.disabled = true; loginBtn.disabled = true;
+      show(statusBox); statusText.textContent = statusMessage;
 
       const t0 = performance.now();
       try {
-        const res = await fetch("/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product })
-        });
-
-        const data = await res.json();
+        const data = await task();
         const ms = Math.round(performance.now() - t0);
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
-          resultTitle.textContent = `Product: ${data.title}`;
-          resultPrice.textContent = `Price: ${data.price}`;
-          // ✅ Show the meta info (category or default message) + elapsed time
-          resultMeta.textContent =
-            (data.meta ? data.meta + " • " : "") + `Completed in ${ms} ms`;
+          // For product flow, we get title/price/meta; for login we get message
+          resultTitle.textContent = data.title ? `Product: ${data.title}` : "Login Automation Success";
+          resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
+          resultMeta.textContent = data.meta
+            ? `${data.meta} • Completed in ${ms} ms`
+            : `${data.message || ""} • Completed in ${ms} ms`;
         } else {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Automation failed";
           resultPrice.textContent = "";
           resultMeta.textContent = data.message || "Unknown error";
         }
-
-        hide(statusBox);
-        show(result);
+        hide(statusBox); show(result);
       } catch (err) {
         resultIcon.innerHTML = iconError();
         resultTitle.textContent = "Network error";
         resultMeta.textContent = String(err);
-        hide(statusBox);
-        show(result);
+        hide(statusBox); show(result);
       } finally {
-        runBtn.disabled = false;
-        input.disabled = false;
+        runBtn.disabled = false; input.disabled = false; loginBtn.disabled = false;
       }
-    });
+    }
   </script>
 </body>
 </html>
