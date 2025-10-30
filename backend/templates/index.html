@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Playwright Robot Driver</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <main class="container" role="main">
@@ -23,7 +23,7 @@
           id="productInput"
           name="product"
           type="text"
-          placeholder="e.g., Music"
+          placeholder="e.g., Music, Food, Travel"
           aria-label="Product to search"
           required
         />
@@ -65,12 +65,6 @@
 
     function show(el) { el.classList.remove("hidden"); }
     function hide(el) { el.classList.add("hidden"); }
-    function setBusy(busy=true){
-      runBtn.disabled = busy;
-      input.disabled = busy;
-      if (busy) { show(statusBox); }
-      else { hide(statusBox); }
-    }
 
     function iconSuccess(){
       return `
@@ -99,40 +93,47 @@
       const product = input.value.trim();
       if (!product) return;
 
-      setBusy(true);
+      runBtn.disabled = true;
+      input.disabled = true;
+      show(statusBox);
       statusText.textContent = "Running automation…";
-      const t0 = performance.now();
 
+      const t0 = performance.now();
       try {
         const res = await fetch("/search", {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ product })
         });
 
         const data = await res.json();
-        const ms = Math.max(0, Math.round(performance.now() - t0));
+        const ms = Math.round(performance.now() - t0);
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
           resultTitle.textContent = `Product: ${data.title}`;
           resultPrice.textContent = `Price: ${data.price}`;
-          resultMeta.textContent = `Completed in ${ms} ms`;
-          show(result);
+          // ✅ Show the meta info (category or default message) + elapsed time
+          resultMeta.textContent =
+            (data.meta ? data.meta + " • " : "") + `Completed in ${ms} ms`;
         } else {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Automation failed";
           resultPrice.textContent = "";
           resultMeta.textContent = data.message || "Unknown error";
-          show(result);
         }
+
+        hide(statusBox);
+        show(result);
       } catch (err) {
         resultIcon.innerHTML = iconError();
         resultTitle.textContent = "Network error";
         resultMeta.textContent = String(err);
+        hide(statusBox);
         show(result);
       } finally {
-        setBusy(false);
+        runBtn.disabled = false;
+        input.disabled = false;
       }
     });
   </script>
