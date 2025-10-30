@@ -1,18 +1,14 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import os
-
-# If you already have this, keep it; otherwise this is where we'll call it.
-# from robot_driver import search_product
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 
-# --- Dummy user store (replace with DB later) ---
-# Store password hashes, not plain text.
+# In-memory user store (use a real DB later)
 USERS = {
-    "mon": generate_password_hash("securemon")
+    "mon": generate_password_hash("supersecurepw")
 }
 
 def login_required(view_func):
@@ -25,7 +21,6 @@ def login_required(view_func):
 
 @app.route("/")
 def home():
-    # If logged in, go to search; else go to login
     if "user" in session:
         return redirect(url_for("search"))
     return redirect(url_for("login"))
@@ -33,18 +28,37 @@ def home():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+        username = request.form["username"].strip()
+        password = request.form["password"]
 
         if username in USERS and check_password_hash(USERS[username], password):
             session["user"] = username
-            flash("Logged in successfully.", "success")
-            next_url = request.args.get("next")
-            return redirect(next_url or url_for("search"))
-        else:
-            flash("Invalid username or password.", "error")
+            flash("Logged in successfully!", "success")
+            return redirect(url_for("search"))
+        flash("Invalid username or password.", "error")
 
     return render_template("login.html")
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form["username"].strip()
+        password = request.form["password"]
+        confirm = request.form["confirm"]
+
+        if not username or not password:
+            flash("Please fill out all fields.", "error")
+        elif username in USERS:
+            flash("Username already exists. Try logging in.", "error")
+        elif password != confirm:
+            flash("Passwords do not match.", "error")
+        else:
+            USERS[username] = generate_password_hash(password)
+            session["user"] = username
+            flash("Account created successfully!", "success")
+            return redirect(url_for("search"))
+
+    return render_template("register.html")
 
 @app.route("/logout")
 def logout():
@@ -63,16 +77,9 @@ def search():
         if not query:
             error = "Please type a product to search."
         else:
-            try:
-                # Integrate your Playwright logic here:
-                # result = search_product(query)
-                # For now, a placeholder:
-                result = f"(demo) Searched for: {query}"
-            except Exception as e:
-                error = f"Search failed: {e}"
-
+            # Integrate your robot_driver here if desired
+            result = f"(demo) searched for '{query}'"
     return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
 if __name__ == "__main__":
-    # Use a non-default port if 5000 is busy
     app.run(host="0.0.0.0", port=5001, debug=True)
