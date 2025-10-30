@@ -26,20 +26,24 @@
           type="text"
           placeholder="e.g., Music, Food, Travel"
           aria-label="Product to search"
-          required
         />
         <button id="runBtn" type="submit" class="btn">Run Bot</button>
       </div>
       <p class="hint">This demo uses <em>Books to Scrape</em> and opens the first item in the chosen category.</p>
     </form>
 
-    <!-- Login task -->
-    <form id="loginForm" class="card">
+    <!-- Login task (username/password with maxlength to prevent overly-long input) -->
+    <form id="loginForm" class="card" autocomplete="off" onsubmit="return false;">
       <p class="label">Demo Login Automation</p>
-      <div class="row">
+      <div style="display:grid;gap:8px;">
+        <input id="loginUser" type="text" placeholder="Username (max 50 chars)" maxlength="50" />
+        <input id="loginPass" type="password" placeholder="Password (max 50 chars)" maxlength="50" />
+      </div>
+      <div style="margin-top:12px" class="row">
+        <div></div>
         <button id="loginBtn" type="button" class="btn">Run Login Test</button>
       </div>
-      <p class="hint">Uses the public PracticeTestAutomation login page (username: <code>student</code>, password: <code>Password123</code>).</p>
+      <p class="hint">Uses the public PracticeTestAutomation login page (test creds: <code>student</code>/<code>Password123</code>).</p>
     </form>
 
     <!-- Loading / status -->
@@ -65,6 +69,8 @@
     const input = document.getElementById("productInput");
 
     const loginBtn = document.getElementById("loginBtn");
+    const loginUser = document.getElementById("loginUser");
+    const loginPass = document.getElementById("loginPass");
 
     const statusBox = document.getElementById("status");
     const statusText = document.getElementById("statusText");
@@ -74,6 +80,8 @@
     const resultTitle = document.getElementById("resultTitle");
     const resultPrice = document.getElementById("resultPrice");
     const resultMeta = document.getElementById("resultMeta");
+
+    const MAX_CRED_LENGTH = 50;
 
     function show(el) { el.classList.remove("hidden"); }
     function hide(el) { el.classList.add("hidden"); }
@@ -108,11 +116,33 @@
       });
     });
 
-    // Login test click
+    // Login test click — client-side length check before sending
     loginBtn.addEventListener("click", async () => {
+      // client-side validation
+      const user = loginUser.value || "";
+      const pass = loginPass.value || "";
+
+      if (user.length > MAX_CRED_LENGTH || pass.length > MAX_CRED_LENGTH) {
+        // show error card and do NOT send to server
+        resultIcon.innerHTML = iconError();
+        resultTitle.textContent = "Input rejected";
+        resultPrice.textContent = "";
+        resultMeta.textContent = `Possible buffer overflow attempt: username or password exceeds ${MAX_CRED_LENGTH} characters.`;
+        hide(statusBox);
+        show(result);
+        return;
+      }
+
       await runAutomation(async () => {
-        const res = await fetch("/login-test");
-        return res.json();
+        const res = await fetch("/login-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: user, password: pass })
+        });
+
+        // if server rejects with 400, still parse JSON for message
+        const json = await res.json();
+        return json;
       }, "Running login automation...");
     });
 
@@ -133,7 +163,6 @@
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
-          // For product flow, we get title/price/meta; for login we get message
           resultTitle.textContent = data.title ? `Product: ${data.title}` : "Login Automation Success";
           resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
           resultMeta.textContent = data.meta
