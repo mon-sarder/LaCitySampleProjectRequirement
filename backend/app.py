@@ -12,7 +12,7 @@ app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 # --- Dummy user store (replace with DB later) ---
 # Store password hashes, not plain text.
 USERS = {
-    "mon": generate_password_hash("supersecurepw")  # change this!
+    "mon": generate_password_hash("securemon")
 }
 
 def login_required(view_func):
