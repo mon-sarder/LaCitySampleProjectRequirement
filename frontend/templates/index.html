@@ -1,39 +1,140 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Playwright Robot Driver</title>
-    <link rel="stylesheet" href="/static/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Playwright Robot Driver</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-    <div class="container">
-        <h1>🤖 Playwright Robot Driver</h1>
-        <p>Enter a product to search:</p>
-        <input id="productInput" type="text" placeholder="e.g., Music">
-        <button id="searchBtn">Run Bot</button>
-        <pre id="output"></pre>
-    </div>
+  <main class="container" role="main">
+    <header class="header">
+      <div class="logo">🤖</div>
+      <div>
+        <h1>Playwright Robot Driver</h1>
+        <p class="sub">Run a fixed browser task and see results below.</p>
+      </div>
+    </header>
 
-    <script>
-        document.getElementById("searchBtn").addEventListener("click", async () => {
-            const product = document.getElementById("productInput").value;
-            document.getElementById("output").textContent = "Running automation...";
+    <form id="botForm" class="card" autocomplete="off">
+      <label for="productInput" class="label">Product</label>
+      <div class="row">
+        <input
+          id="productInput"
+          name="product"
+          type="text"
+          placeholder="e.g., Music"
+          aria-label="Product to search"
+          required
+        />
+        <button id="runBtn" type="submit" class="btn">Run Bot</button>
+      </div>
+      <p class="hint">This demo uses <em>Books to Scrape</em> and will open the first item.</p>
+    </form>
 
-            const response = await fetch("/search", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ product })
-            });
+    <!-- Loading / status -->
+    <section id="status" class="status hidden" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <span id="statusText">Running automation…</span>
+    </section>
 
-            const data = await response.json();
-            if (data.status === "success") {
-                document.getElementById("output").textContent =
-                    `✅ Product: ${data.title}\n💲 Price: ${data.price}`;
-            } else {
-                document.getElementById("output").textContent =
-                    `❌ Error: ${data.message}`;
-            }
+    <!-- Result card -->
+    <section id="result" class="card hidden" aria-live="polite">
+      <div id="resultIcon" class="icon"></div>
+      <div class="result-body">
+        <h2 id="resultTitle"></h2>
+        <p id="resultPrice" class="price"></p>
+        <p id="resultMeta" class="meta"></p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("botForm");
+    const runBtn = document.getElementById("runBtn");
+    const input = document.getElementById("productInput");
+
+    const statusBox = document.getElementById("status");
+    const statusText = document.getElementById("statusText");
+
+    const result = document.getElementById("result");
+    const resultIcon = document.getElementById("resultIcon");
+    const resultTitle = document.getElementById("resultTitle");
+    const resultPrice = document.getElementById("resultPrice");
+    const resultMeta = document.getElementById("resultMeta");
+
+    function show(el) { el.classList.remove("hidden"); }
+    function hide(el) { el.classList.add("hidden"); }
+    function setBusy(busy=true){
+      runBtn.disabled = busy;
+      input.disabled = busy;
+      if (busy) { show(statusBox); }
+      else { hide(statusBox); }
+    }
+
+    function iconSuccess(){
+      return `
+        <svg viewBox="0 0 24 24" class="svg success" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M7 12l3 3 7-7" />
+        </svg>`;
+    }
+
+    function iconError(){
+      return `
+        <svg viewBox="0 0 24 24" class="svg error" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M8 8l8 8M16 8l-8 8" />
+        </svg>`;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      hide(result);
+      resultTitle.textContent = "";
+      resultPrice.textContent = "";
+      resultMeta.textContent = "";
+      resultIcon.innerHTML = "";
+
+      const product = input.value.trim();
+      if (!product) return;
+
+      setBusy(true);
+      statusText.textContent = "Running automation…";
+      const t0 = performance.now();
+
+      try {
+        const res = await fetch("/search", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ product })
         });
-    </script>
+
+        const data = await res.json();
+        const ms = Math.max(0, Math.round(performance.now() - t0));
+
+        if (data.status === "success") {
+          resultIcon.innerHTML = iconSuccess();
+          resultTitle.textContent = `Product: ${data.title}`;
+          resultPrice.textContent = `Price: ${data.price}`;
+          resultMeta.textContent = `Completed in ${ms} ms`;
+          show(result);
+        } else {
+          resultIcon.innerHTML = iconError();
+          resultTitle.textContent = "Automation failed";
+          resultPrice.textContent = "";
+          resultMeta.textContent = data.message || "Unknown error";
+          show(result);
+        }
+      } catch (err) {
+        resultIcon.innerHTML = iconError();
+        resultTitle.textContent = "Network error";
+        resultMeta.textContent = String(err);
+        show(result);
+      } finally {
+        setBusy(false);
+      }
+    });
+  </script>
 </body>
 </html>
