@@ -1,54 +1,78 @@
-# app.py
-from flask import Flask, render_template, request, jsonify
-from robot_driver import search_product
-from login_driver import run_login_test
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from werkzeug.security import check_password_hash, generate_password_hash
+from functools import wraps
 import os
 
-# Ensure Flask knows where templates/static live (inside backend/)
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-app = Flask(
-    __name__,
-    template_folder=os.path.join(BASE_DIR, "templates"),
-    static_folder=os.path.join(BASE_DIR, "static"),
-)
+# If you already have this, keep it; otherwise this is where we'll call it.
+# from robot_driver import search_product
 
-MAX_CRED_LENGTH = 50  # maximum allowed length for username/password
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
+
+# --- Dummy user store (replace with DB later) ---
+# Store password hashes, not plain text.
+USERS = {
+    "mon": generate_password_hash("supersecurepw")  # change this!
+}
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if "user" not in session:
+            return redirect(url_for("login", next=request.path))
+        return view_func(*args, **kwargs)
+    return wrapper
 
 @app.route("/")
-def index():
-    return render_template("index.html")
+def home():
+    # If logged in, go to search; else go to login
+    if "user" in session:
+        return redirect(url_for("search"))
+    return redirect(url_for("login"))
 
-@app.route("/search", methods=["POST"])
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        if username in USERS and check_password_hash(USERS[username], password):
+            session["user"] = username
+            flash("Logged in successfully.", "success")
+            next_url = request.args.get("next")
+            return redirect(next_url or url_for("search"))
+        else:
+            flash("Invalid username or password.", "error")
+
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    flash("Logged out.", "info")
+    return redirect(url_for("login"))
+
+@app.route("/search", methods=["GET", "POST"])
+@login_required
 def search():
-    data = request.get_json() or {}
-    product_name = data.get("product", "")
-    result = search_product(product_name)
-    if result.get("status") == "success":
-        print(f"✅ Success! {result.get('title')} — {result.get('price')} ({result.get('meta')})")
-    else:
-        print(f"❌ Error: {result.get('message')}")
-    return jsonify(result)
+    result = None
+    error = None
+    query = ""
+    if request.method == "POST":
+        query = request.form.get("query", "").strip()
+        if not query:
+            error = "Please type a product to search."
+        else:
+            try:
+                # Integrate your Playwright logic here:
+                # result = search_product(query)
+                # For now, a placeholder:
+                result = f"(demo) Searched for: {query}"
+            except Exception as e:
+                error = f"Search failed: {e}"
 
-# NOTE: switched to POST so username/password can be sent safely in JSON body.
-@app.route("/login-test", methods=["POST"])
-def login_test():
-    data = request.get_json() or {}
-    username = data.get("username", "")
-    password = data.get("password", "")
-
-    # Server-side length validation to catch overly-long inputs
-    if len(username) > MAX_CRED_LENGTH or len(password) > MAX_CRED_LENGTH:
-        msg = "Possible buffer overflow attempt: username or password exceeds allowed length (50)."
-        print(f"❌ Security: {msg} username_len={len(username)} password_len={len(password)}")
-        return jsonify({"status": "error", "message": msg}), 400
-
-    # Proceed to run the login automation with validated inputs
-    result = run_login_test(username=username, password=password)
-    if result.get("status") == "success":
-        print(f"✅ Login success: {result.get('message')}")
-    else:
-        print(f"❌ Login error: {result.get('message')}")
-    return jsonify(result)
+    return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Use a non-default port if 5000 is busy
+    app.run(host="0.0.0.0", port=5001, debug=True)
