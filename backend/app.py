@@ -1,14 +1,20 @@
 # app.py
 import os
 import sqlite3
+import traceback
+from datetime import timedelta
 from functools import wraps
+
 from flask import (
-    Flask, render_template, request, redirect, url_for, session, flash, jsonify
+    Flask, render_template, request, redirect, url_for,
+    session, flash, jsonify
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import BadRequest
+from jinja2 import TemplateNotFound
 
-from robot_driver import search_product          # product automation (Books to Scrape)
-from login_driver import run_login_test          # demo login automation (PracticeTestAutomation)
+from robot_driver import search_product          # Playwright product bot
+from login_driver import run_login_test          # Playwright demo-login bot
 
 # ── App & paths ────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -21,18 +27,33 @@ app = Flask(
 # ── Security / limits ─────────────────────────────────────────────────────────
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB request cap
-
-MAX_CRED_LENGTH = 50  # username/password hard limit (buffer-overflow style guard)
+app.permanent_session_lifetime = timedelta(minutes=30)  # session timeout
+MAX_CRED_LENGTH = 50  # username/password hard limit
 DB_PATH = os.path.join(BASE_DIR, "users.db")
+
+# Optional rate limiter (won't break if package isn't installed)
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
+except Exception:
+    limiter = None  # silently skip if not available
+
 
 @app.after_request
 def set_secure_headers(resp):
-    # Solid defaults; relax CSP if you later load assets from CDNs.
+    # Solid defaults; relax CSP if you later use external CDNs.
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
     return resp
+
+
+@app.before_request
+def make_session_permanent():
+    session.permanent = True
+
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def init_db():
@@ -47,23 +68,47 @@ def init_db():
         """)
         conn.commit()
 
+
+def _safe_query(fn):
+    """Wrap DB ops to avoid crashing the app on transient errors."""
+    try:
+        return fn()
+    except sqlite3.OperationalError as e:
+        print(f"❌ SQLite OperationalError: {e}")
+        traceback.print_exc()
+        return None
+    except Exception as e:
+        print(f"❌ Unknown DB error: {e}")
+        traceback.print_exc()
+        return None
+
+
 def get_user(username: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
-        return cur.fetchone()
+    def _q():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
+            return cur.fetchone()
+    return _safe_query(_q)
+
 
 def add_user(username: str, password_hash: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
-        conn.commit()
+    def _q():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
+            conn.commit()
+            return True
+    return _safe_query(_q)
+
 
 init_db()
+
 
 # ── Auth utils ────────────────────────────────────────────────────────────────
 def _too_long(x: str) -> bool:
     return x is None or len(x) > MAX_CRED_LENGTH
+
 
 def login_required(view_func):
     @wraps(view_func)
@@ -73,15 +118,21 @@ def login_required(view_func):
         return view_func(*args, **kwargs)
     return wrapper
 
-# ── Pages (your classic flow) ─────────────────────────────────────────────────
+
+# ── Pages (classic flow) ──────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    # If you want the single-page demo UI instead, render "index.html" here.
+    # If you prefer the SPA demo as your landing page, return render_template("index.html") here.
     if "user" in session:
         return redirect(url_for("search_page"))
     return redirect(url_for("login"))
 
-@app.route("/login", methods=["GET", "POST"])
+
+route_login = app.route("/login", methods=["GET", "POST"])
+if limiter:
+    route_login = limiter.limit("5 per minute")(route_login)  # simple brute-force guard
+
+@route_login
 def login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
@@ -92,12 +143,18 @@ def login():
             return render_template("login.html"), 400
 
         user = get_user(username)
+        if user is None:
+            flash("Database error — please try again later.", "error")
+            return render_template("login.html"), 500
+
         if user and check_password_hash(user[1], password):
             session["user"] = username
             flash("Logged in successfully!", "success")
             return redirect(url_for("search_page"))
+
         flash("Invalid username or password.", "error")
     return render_template("login.html")
+
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -117,15 +174,16 @@ def register():
         elif password != confirm:
             flash("Passwords do not match.", "error")
         else:
-            try:
-                pw_hash = generate_password_hash(password)
-                add_user(username, pw_hash)
-                session["user"] = username
-                flash("Account created successfully!", "success")
-                return redirect(url_for("search_page"))
-            except sqlite3.IntegrityError:
-                flash("Username already exists.", "error")
+            pw_hash = generate_password_hash(password)
+            ok = add_user(username, pw_hash)
+            if not ok:
+                flash("Database error — please try again later.", "error")
+                return render_template("register.html"), 500
+            session["user"] = username
+            flash("Account created successfully!", "success")
+            return redirect(url_for("search_page"))
     return render_template("register.html")
+
 
 @app.route("/logout")
 def logout():
@@ -133,10 +191,11 @@ def logout():
     flash("Logged out successfully.", "info")
     return redirect(url_for("login"))
 
+
 @app.route("/search", methods=["GET", "POST"])
 @login_required
 def search_page():
-    """Your protected page rendering search.html (classic, not the JSON API)."""
+    """Protected page rendering search.html (classic form flow)."""
     result = None
     error = None
     query = ""
@@ -146,7 +205,6 @@ def search_page():
             error = "Please type a product to search."
         else:
             try:
-                # Option A: call Playwright here synchronously
                 data = search_product(query)
                 if data.get("status") == "success":
                     result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
@@ -156,16 +214,23 @@ def search_page():
                 error = f"Search failed: {e}"
     return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
-# If you also want the single-page demo UI we built earlier:
+
+# Optional SPA demo page you built earlier (Ajax -> JSON APIs)
 @app.route("/demo")
 def demo_index():
     return render_template("index.html")
 
-# ── JSON APIs used by the demo index.html ─────────────────────────────────────
+
+# ── JSON APIs (used by SPA demo) ──────────────────────────────────────────────
 @app.route("/search-json", methods=["POST"])
 def search_json():
-    """JSON endpoint for the product automation (used by index.html)."""
-    data = request.get_json() or {}
+    try:
+        data = request.get_json(force=True)
+    except BadRequest:
+        return jsonify({"status": "error", "message": "Invalid JSON format."}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
     product_name = (data.get("product") or "").strip()
     result = search_product(product_name)
     if result.get("status") == "success":
@@ -174,20 +239,29 @@ def search_json():
         print(f"❌ Error: {result.get('message')}")
     return jsonify(result)
 
+
 @app.route("/login-test", methods=["POST"])
 def login_test():
-    """JSON endpoint that runs the demo login automation with length guard."""
-    data = request.get_json() or {}
+    try:
+        data = request.get_json(force=True)
+    except BadRequest:
+        return jsonify({"status": "error", "message": "Invalid JSON format."}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
+
     if _too_long(username) or _too_long(password):
         msg = f"Possible buffer overflow attempt: username or password exceeds allowed length ({MAX_CRED_LENGTH})."
         print(f"❌ Security: {msg} username_len={len(username)} password_len={len(password)}")
         return jsonify({"status": "error", "message": msg}), 400
+
     result = run_login_test(username=username, password=password)
     return jsonify(result)
 
-# ── Friendly error pages ───────────────────────────────────────────
+
+# ── Friendly error pages ──────────────────────────────────────────────────────
 @app.errorhandler(404)
 def _404(_e):
     return render_template("index.html"), 404
@@ -196,8 +270,14 @@ def _404(_e):
 def _500(_e):
     return render_template("index.html"), 500
 
+@app.errorhandler(TemplateNotFound)
+def _template_missing(e):
+    print(f"❌ Missing template: {e.name}")
+    return "<h2>Template missing on server. Contact admin.</h2>", 500
+
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
-    # Visit /demo for the SPA demo, or /login -> /search for the classic flow
+    # Use /register → /login → /search for classic flow, or /demo for SPA.
     app.run(host="0.0.0.0", port=5001, debug=True)
