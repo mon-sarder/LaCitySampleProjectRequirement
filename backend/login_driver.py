@@ -1,48 +1,29 @@
 # login_driver.py
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-import os
+import asyncio
+from playwright.async_api import async_playwright
 
-DEFAULT_TIMEOUT = 20_000  # ms
-MAX_CRED_LENGTH = 50
+CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
 
+async def _login_async(username, password, agent):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=CUSTOM_UA)
+        page = await context.new_page()
 
-def run_login_test(username: str = "student", password: str = "Password123"):
-    """
-    Automate a login on a public demo site.
-    Inputs are validated in app.py; we also defensively re-check here.
-    """
-    # Defensive guard even if someone bypasses the frontend
-    if len(username) > MAX_CRED_LENGTH or len(password) > MAX_CRED_LENGTH:
-        return {
-            "status": "error",
-            "message": (
-                f"Possible buffer overflow attempt: credential length exceeds {MAX_CRED_LENGTH}."
-            ),
-        }
+        # Example: dummy login test site
+        await page.goto("https://www.saucedemo.com/")
+        await page.fill("#user-name", username)
+        await page.fill("#password", password)
+        await page.click("#login-button")
+        await page.wait_for_load_state("networkidle")
 
-    headless = os.environ.get("HEADFUL") not in ("1", "true", "True")
+        text = await page.inner_text("body")
+        status = "success" if "Products" in text else "error"
+        msg = "Login successful!" if status == "success" else "Login failed."
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            page = browser.new_page()
+        await browser.close()
+        return {"status": status, "message": msg, "agent": agent}
 
-            page.goto("https://practicetestautomation.com/practice-test-login/", timeout=DEFAULT_TIMEOUT)
-            page.wait_for_selector("#username", timeout=DEFAULT_TIMEOUT)
-
-            page.fill("#username", username)
-            page.fill("#password", password)
-            page.click("#submit")
-
-            # Success indicator on that page
-            page.wait_for_selector(".post-title", timeout=DEFAULT_TIMEOUT)
-            success_text = (page.text_content(".post-title") or "").strip()
-
-            page.close()
-            browser.close()
-            return {"status": "success", "message": success_text}
-
-    except PlaywrightTimeoutError:
-        return {"status": "error", "message": "Login failed: timeout or element not found."}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+def run_login_test(username, password, agent="BroncoMCP/1.0"):
+    print(f"[{agent}] Running login test for user '{username}' ...")
+    return asyncio.run(_login_async(username, password, agent))
