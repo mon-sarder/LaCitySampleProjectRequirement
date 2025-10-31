@@ -13,7 +13,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import BadRequest
 from jinja2 import TemplateNotFound
 
-from robot_driver import search_product          # Playwright product bot
+from robot_driver import search_product          # Playwright product bot (now returns choices or items)
 from login_driver import run_login_test          # Playwright demo-login bot
 
 # ── App & paths ────────────────────────────────────────────────────────────────
@@ -70,8 +70,6 @@ def init_db():
         # ✅ Seed a default admin (override via env DEFAULT_USER / DEFAULT_PASS)
         default_user = os.getenv("DEFAULT_USER", "admin")
         default_pass = os.getenv("DEFAULT_PASS", "admin123")
-
-        # Only insert if not already present
         cur.execute("SELECT 1 FROM users WHERE username = ?", (default_user,))
         exists = cur.fetchone()
         if not exists:
@@ -80,9 +78,7 @@ def init_db():
                 cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (default_user, pw_hash))
                 print(f"✅ Default login added: {default_user} / {default_pass}")
             except sqlite3.IntegrityError:
-                # Race-safe: if created by another process between SELECT and INSERT
                 pass
-
         conn.commit()
 
 
@@ -139,7 +135,6 @@ def login_required(view_func):
 # ── Pages (classic flow) ──────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    # If you prefer the SPA demo as landing, return render_template("index.html") here.
     if "user" in session:
         return redirect(url_for("search_page"))
     return redirect(url_for("login"))
@@ -212,24 +207,46 @@ def logout():
 @app.route("/search", methods=["GET", "POST"])
 @login_required
 def search_page():
-    """Protected page rendering search.html (classic form flow)."""
-    result = None
-    error = None
-    query = ""
+    """
+    Protected page rendering search.html.
+    - POST with a query tries to resolve a category via robot_driver.search_product.
+    - If choices are returned -> show clickable category buttons.
+    - If items are returned -> list titles+prices for that category.
+    """
+    context = {
+        "username": session.get("user"),
+        "query": "",
+        "error": None,
+        "message": None,
+        "choices": None,   # list[str] of categories to click
+        "items": None,     # list[{title, price}]
+        "picked": None,    # chosen category
+        "meta": None
+    }
+
     if request.method == "POST":
-        query = (request.form.get("query") or "").strip()
-        if not query:
-            error = "Please type a product to search."
+        q = (request.form.get("query") or "").strip()
+        context["query"] = q
+        if not q:
+            context["error"] = "Please type a product/category to search."
         else:
             try:
-                data = search_product(query)
-                if data.get("status") == "success":
-                    result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
+                data = search_product(q)
+                status = data.get("status")
+                if status == "choices":
+                    context["message"] = data.get("message")
+                    context["choices"] = data.get("categories") or []
+                elif status == "success":
+                    # New behavior: we now get a category and an item list from robot_driver
+                    context["picked"] = data.get("category")
+                    context["items"] = data.get("items") or []
+                    context["meta"] = data.get("meta")
                 else:
-                    error = data.get("message", "Search failed.")
+                    context["error"] = data.get("message", "Search failed.")
             except Exception as e:
-                error = f"Search failed: {e}"
-    return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
+                context["error"] = f"Search failed: {e}"
+
+    return render_template("search.html", **context)
 
 
 # Optional SPA demo page (AJAX → JSON APIs)
@@ -250,10 +267,6 @@ def search_json():
 
     product_name = (data.get("product") or "").strip()
     result = search_product(product_name)
-    if result.get("status") == "success":
-        print(f"✅ Success! {result.get('title')} — {result.get('price')} ({result.get('meta')})")
-    else:
-        print(f"❌ Error: {result.get('message')}")
     return jsonify(result)
 
 

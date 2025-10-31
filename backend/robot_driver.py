@@ -10,58 +10,66 @@ def _normalize(s: str) -> str:
 
 def _collect_categories(page):
     """
-    Returns a list of category names (excluding the top 'Books' root).
+    Returns a list of category names (excluding the top 'Books').
     """
     page.goto(HOME_URL, timeout=DEFAULT_TIMEOUT)
     page.wait_for_load_state("domcontentloaded")
-    # Sidebar categories (anchor text). First link is root "Books", skip it.
     links = page.locator(".side_categories a").all()
     names = []
     for a in links:
         txt = (a.text_content() or "").strip()
         if txt and txt.lower() != "books":
             names.append(txt)
-    # De-dup & keep order
-    seen = set(); ordered = []
+    # de-dup while preserving order
+    seen = set(); out = []
     for n in names:
         if n not in seen:
-            ordered.append(n); seen.add(n)
-    return ordered
+            out.append(n); seen.add(n)
+    return out
 
 def _fuzzy_pick(target: str, choices):
     """
-    Try exact, then substring, then difflib fuzzy match.
-    Returns (match_or_None, used_strategy)
+    exact (case-insensitive) -> substring -> fuzzy (difflib)
     """
     t = _normalize(target)
     norm_map = {c: _normalize(c) for c in choices}
 
-    # Exact (case-insensitive)
     for c, n in norm_map.items():
         if n == t:
             return c, "exact"
-
-    # Substring (e.g., 'food' -> 'Food and Drink')
     for c, n in norm_map.items():
         if t and t in n:
             return c, "substring"
-
-    # Fuzzy (closest match)
     best = difflib.get_close_matches(t, list(norm_map.values()), n=1, cutoff=0.72)
     if best:
         best_norm = best[0]
-        # find original case spelling
         for c, n in norm_map.items():
             if n == best_norm:
                 return c, "fuzzy"
-
     return None, None
+
+def _collect_items_on_category(page, limit=20):
+    """
+    On a category page, collect up to `limit` items (title + price) on the first page.
+    """
+    page.wait_for_selector(".product_pod", timeout=DEFAULT_TIMEOUT)
+    pods = page.locator(".product_pod")
+    count = min(pods.count(), limit)
+    items = []
+    for i in range(count):
+        pod = pods.nth(i)
+        # title is in the anchor title attribute inside h3
+        title = (pod.locator("h3 a").get_attribute("title") or "").strip()
+        if not title:
+            title = (pod.locator("h3").text_content() or "").strip()
+        price = (pod.locator(".price_color").text_content() or "").strip()
+        items.append({"title": title, "price": price})
+    return items
 
 def search_product(product_name: str = "music"):
     """
-    Navigate to Books to Scrape, pick a category (fuzzy), open the first book,
-    and return title+price. If no near match, return the full category list
-    so the UI can render clickable choices.
+    If no near match to a category is found -> return {"status":"choices","categories":[...]}.
+    If a category is decided -> return {"status":"success","category":..., "items":[{title,price}...]}.
     """
     headless = os.environ.get("HEADFUL") not in ("1", "true", "True")
     desired = (product_name or "").strip()
@@ -72,12 +80,9 @@ def search_product(product_name: str = "music"):
             page = browser.new_page()
 
             categories = _collect_categories(page)
-
-            # Decide the category
             picked, how = _fuzzy_pick(desired, categories) if desired else (None, None)
 
             if not picked:
-                # No close match → let the UI present choices
                 browser.close()
                 return {
                     "status": "choices",
@@ -85,22 +90,19 @@ def search_product(product_name: str = "music"):
                     "categories": categories
                 }
 
-            # Click the chosen category by accessible name
+            # click the category and collect items
             page.get_by_role("link", name=picked).click(timeout=DEFAULT_TIMEOUT)
-
-            # Open first product
-            page.wait_for_selector(".product_pod", timeout=DEFAULT_TIMEOUT)
-            page.locator(".product_pod a").first.click()
-            page.wait_for_selector(".product_main h1", timeout=DEFAULT_TIMEOUT)
-
-            title = (page.text_content(".product_main h1") or "").strip()
-            price = (page.text_content(".price_color") or "").strip()
+            items = _collect_items_on_category(page, limit=20)
 
             page.close()
             browser.close()
 
-            meta = f"Category: {picked} (match: {how})"
-            return {"status": "success", "title": title, "price": price, "meta": meta}
+            return {
+                "status": "success",
+                "category": picked,
+                "items": items,
+                "meta": f"Category: {picked} (match: {how}), items on first page: {len(items)}"
+            }
 
     except PlaywrightTimeoutError:
         return {"status": "error", "message": "Page load timeout or element not found."}
