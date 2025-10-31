@@ -1,126 +1,89 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-from werkzeug.security import generate_password_hash, check_password_hash
-from functools import wraps
+# app.py
 import os
+from flask import Flask, render_template, request, jsonify
 
-# Import your automation/search logic if needed
-# from robot_driver import search_product
+from robot_driver import search_product
+from login_driver import run_login_test
 
-app = Flask(__name__)
+# ── Flask app + paths ──────────────────────────────────────────────────────────
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
+)
+
+# ── Security / limits ─────────────────────────────────────────────────────────
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB request cap
 
-# -------------------------------
-# In-memory user store (for demo)
-# -------------------------------
-# In production, replace this with a database (SQLite, etc.)
-USERS = {
-    "mon": generate_password_hash("supersecurepw")
-}
+MAX_CRED_LENGTH = 50  # single source of truth for username/password limit
 
-# -------------------------------
-# Login required decorator
-# -------------------------------
-def login_required(view_func):
-    @wraps(view_func)
-    def wrapper(*args, **kwargs):
-        if "user" not in session:
-            return redirect(url_for("login", next=request.path))
-        return view_func(*args, **kwargs)
-    return wrapper
 
-# -------------------------------
-# Routes
-# -------------------------------
+@app.after_request
+def set_secure_headers(resp):
+    # Solid defaults; relax CSP if you later pull assets from CDNs
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
+    return resp
 
+
+# ── Pages ─────────────────────────────────────────────────────────────────────
 @app.route("/")
-def home():
-    if "user" in session:
-        return redirect(url_for("search"))
-    return redirect(url_for("login"))
+def index():
+    return render_template("index.html")
 
-# -------------------------------
-# LOGIN
-# -------------------------------
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        username = request.form["username"].strip()
-        password = request.form["password"]
 
-        if username in USERS and check_password_hash(USERS[username], password):
-            session["user"] = username
-            flash("Logged in successfully!", "success")
-            return redirect(url_for("search"))
-        flash("Invalid username or password.", "error")
-
-    return render_template("login.html")
-
-# -------------------------------
-# REGISTER
-# -------------------------------
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        username = request.form["username"].strip()
-        password = request.form["password"]
-        confirm = request.form["confirm"]
-
-        if not username or not password:
-            flash("Please fill out all fields.", "error")
-        elif username in USERS:
-            flash("Username already exists. Try logging in.", "error")
-        elif password != confirm:
-            flash("Passwords do not match.", "error")
-        else:
-            USERS[username] = generate_password_hash(password)
-            session["user"] = username
-            flash("Account created successfully!", "success")
-            return redirect(url_for("search"))
-
-    return render_template("register.html")
-
-# -------------------------------
-# LOGOUT
-# -------------------------------
-@app.route("/logout")
-def logout():
-    session.pop("user", None)
-    flash("Logged out successfully.", "info")
-    return redirect(url_for("login"))
-
-# -------------------------------
-# SEARCH (protected)
-# -------------------------------
-@app.route("/search", methods=["GET", "POST"])
-@login_required
+# ── API: Product automation (Books to Scrape) ─────────────────────────────────
+@app.route("/search", methods=["POST"])
 def search():
-    result = None
-    error = None
-    query = ""
+    data = request.get_json() or {}
+    product_name = (data.get("product") or "").strip()
+    result = search_product(product_name)
+    # Console log for graders
+    if result.get("status") == "success":
+        print(f"✅ Success! {result.get('title')} — {result.get('price')} ({result.get('meta')})")
+    else:
+        print(f"❌ Error: {result.get('message')}")
+    return jsonify(result)
 
-    if request.method == "POST":
-        query = request.form.get("query", "").strip()
 
-        if not query:
-            error = "Please type a product to search."
-        else:
-            try:
-                # Replace this placeholder with your robot_driver search call:
-                # result = search_product(query)
-                result = f"(demo) Successfully searched for '{query}'"
-            except Exception as e:
-                error = f"Search failed: {e}"
+# ── API: Demo login automation with input-length guard ────────────────────────
+@app.route("/login-test", methods=["POST"])
+def login_test():
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
 
-    return render_template(
-        "search.html",
-        username=session.get("user"),
-        result=result,
-        error=error,
-        query=query,
-    )
+    if len(username) > MAX_CRED_LENGTH or len(password) > MAX_CRED_LENGTH:
+        msg = (
+            "Possible buffer overflow attempt: username or password exceeds "
+            f"allowed length ({MAX_CRED_LENGTH})."
+        )
+        print(f"❌ Security: {msg} username_len={len(username)} password_len={len(password)}")
+        return jsonify({"status": "error", "message": msg}), 400
 
-# -------------------------------
-# Run the Flask app
-# -------------------------------
+    result = run_login_test(username=username, password=password)
+    if result.get("status") == "success":
+        print(f"✅ Login success: {result.get('message')}")
+    else:
+        print(f"❌ Login error: {result.get('message')}")
+    return jsonify(result)
+
+
+# ── Friendly errors (optional) ────────────────────────────────────────────────
+@app.errorhandler(404)
+def _404(_e):
+    return render_template("index.html"), 404
+
+
+@app.errorhandler(500)
+def _500(_e):
+    return render_template("index.html"), 500
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # For headful demo: set HEADFUL=1 in env and we’ll respect it in drivers
+    app.run(debug=True)

@@ -1,7 +1,10 @@
 # robot_driver.py
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import os
 
-# Map user input -> site category display name
+DEFAULT_TIMEOUT = 20_000  # ms
+
+# Map user input -> category display name on Books to Scrape (accessible name)
 CATEGORY_NAMES = {
     "music": "Music",
     "food": "Food and Drink",
@@ -13,36 +16,38 @@ CATEGORY_NAMES = {
     "fiction": "Fiction",
 }
 
+
 def search_product(product_name: str = "music"):
     """
-    Fixed task with input: open Books to Scrape (HTTP), navigate to the chosen
-    category, open the first book, and return title + price + meta.
+    Open Books to Scrape (HTTP), navigate to chosen category, open the first book,
+    and return its title + price + meta. Robust timeouts + selectors.
     """
-    try:
-        # normalize input
-        key = (product_name or "").strip().lower()
-        category = CATEGORY_NAMES.get(key, "Music")
-        used_default = category == "Music" and key not in ("music", "")
+    key = (product_name or "").strip().lower()
+    category = CATEGORY_NAMES.get(key, "Music")
+    used_default = category == "Music" and key not in ("music", "")
 
+    headless = os.environ.get("HEADFUL") not in ("1", "true", "True")
+
+    try:
         with sync_playwright() as p:
-            # Set headless=False and slow_mo=200 for demo/debug
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=headless)
             page = browser.new_page()
 
-            # IMPORTANT: site is HTTP, not HTTPS
-            page.goto("http://books.toscrape.com/", timeout=20000)
+            # NOTE: site is HTTP, not HTTPS
+            page.goto("http://books.toscrape.com/", timeout=DEFAULT_TIMEOUT)
             page.wait_for_load_state("domcontentloaded")
 
-            # Click category by accessible name
-            page.get_by_role("link", name=category).click(timeout=15000)
+            # Click category by accessible name (stable)
+            page.get_by_role("link", name=category).click(timeout=DEFAULT_TIMEOUT)
 
             # Open first product
-            page.wait_for_selector(".product_pod", timeout=15000)
+            page.wait_for_selector(".product_pod", timeout=DEFAULT_TIMEOUT)
             page.locator(".product_pod a").first.click()
-            page.wait_for_selector(".product_main h1", timeout=15000)
+            page.wait_for_selector(".product_main h1", timeout=DEFAULT_TIMEOUT)
 
             title = (page.text_content(".product_main h1") or "").strip()
             price = (page.text_content(".price_color") or "").strip()
+
             page.close()
             browser.close()
 

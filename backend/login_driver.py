@@ -1,37 +1,41 @@
 # login_driver.py
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import os
 
-# Mirror this value if you want the constant in one place (but app.py is authoritative):
+DEFAULT_TIMEOUT = 20_000  # ms
 MAX_CRED_LENGTH = 50
+
 
 def run_login_test(username: str = "student", password: str = "Password123"):
     """
-    Demo login automation against a public practice page.
-    Accepts username/password (already validated by the server).
+    Automate a login on a public demo site.
+    Inputs are validated in app.py; we also defensively re-check here.
     """
-    # Defensive server-side check: refuse if too long
+    # Defensive guard even if someone bypasses the frontend
     if len(username) > MAX_CRED_LENGTH or len(password) > MAX_CRED_LENGTH:
         return {
             "status": "error",
-            "message": f"Possible buffer overflow attempt: credential length exceeds {MAX_CRED_LENGTH}."
+            "message": (
+                f"Possible buffer overflow attempt: credential length exceeds {MAX_CRED_LENGTH}."
+            ),
         }
+
+    headless = os.environ.get("HEADFUL") not in ("1", "true", "True")
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=headless)
             page = browser.new_page()
 
-            # Demo login page with test creds
-            page.goto("https://practicetestautomation.com/practice-test-login/", timeout=20000)
-            page.wait_for_selector("#username", timeout=15000)
+            page.goto("https://practicetestautomation.com/practice-test-login/", timeout=DEFAULT_TIMEOUT)
+            page.wait_for_selector("#username", timeout=DEFAULT_TIMEOUT)
 
-            # Fill and submit using provided values (already validated/trimmed)
             page.fill("#username", username)
             page.fill("#password", password)
             page.click("#submit")
 
-            # Wait for success indicator
-            page.wait_for_selector(".post-title", timeout=15000)
+            # Success indicator on that page
+            page.wait_for_selector(".post-title", timeout=DEFAULT_TIMEOUT)
             success_text = (page.text_content(".post-title") or "").strip()
 
             page.close()
