@@ -187,7 +187,7 @@ def login_test():
     result = run_login_test(username=username, password=password)
     return jsonify(result)
 
-# ── Friendly error pages (optional) ───────────────────────────────────────────
+# ── Friendly error pages ───────────────────────────────────────────
 @app.errorhandler(404)
 def _404(_e):
     return render_template("index.html"), 404
