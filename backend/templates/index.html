@@ -18,28 +18,28 @@
 
     <!-- Product task -->
     <form id="botForm" class="card" autocomplete="off">
-      <label for="productInput" class="label">Product</label>
+      <label for="productInput" class="label">Product / Category</label>
       <div class="row">
         <input
           id="productInput"
           name="product"
           type="text"
-          placeholder="e.g., Music, Food, Travel"
+          placeholder="e.g., Music, Food and Drink, Travel"
           aria-label="Product to search"
         />
         <button id="runBtn" type="submit" class="btn">Run Bot</button>
       </div>
-      <p class="hint">Uses <em>Books to Scrape</em>. Opens the first item in the chosen category.</p>
+      <p class="hint">Uses <em>Books to Scrape</em>. If your entry doesn’t closely match a category, all categories will be listed below.</p>
     </form>
 
     <!-- Login task (username/password with maxlength=50) -->
     <form id="loginForm" class="card" autocomplete="off" onsubmit="return false;">
       <p class="label">Demo Login Automation</p>
-      <div style="display:grid;gap:8px;">
+      <div class="stack">
         <input id="loginUser" type="text" placeholder="Username (max 50 chars)" maxlength="50" />
         <input id="loginPass" type="password" placeholder="Password (max 50 chars)" maxlength="50" />
       </div>
-      <div style="margin-top:12px" class="row">
+      <div class="row mt-2">
         <div></div>
         <button id="loginBtn" type="button" class="btn">Run Login Test</button>
       </div>
@@ -53,7 +53,7 @@
         <input id="goalInput" type="text" placeholder="e.g., Open Travel and return the first book's price" />
         <button id="mcpBtn" type="button" class="btn">Run AI Plan</button>
       </div>
-      <p class="hint">Planner: <code>builtin</code> (no API key) — set planner to <code>openai</code> in code to use your model.</p>
+      <p class="hint">Planner: <code>builtin</code> (no API key). Switch to <code>openai</code> in code if desired.</p>
     </form>
 
     <!-- Loading / status -->
@@ -72,9 +72,17 @@
         <pre id="resultJson" class="meta" style="white-space:pre-wrap;"></pre>
       </div>
     </section>
+
+    <!-- NEW: Choices (categories) -->
+    <section id="choices" class="card hidden" aria-live="polite">
+      <h2>Pick a Category</h2>
+      <p class="hint">We couldn’t find a close match. Choose one of the available categories:</p>
+      <div id="choicesList" class="chip-list"></div>
+    </section>
   </main>
 
   <script>
+    // --- Elements ---
     const form = document.getElementById("botForm");
     const runBtn = document.getElementById("runBtn");
     const input = document.getElementById("productInput");
@@ -96,8 +104,12 @@
     const resultMeta = document.getElementById("resultMeta");
     const resultJson = document.getElementById("resultJson");
 
+    const choices = document.getElementById("choices");
+    const choicesList = document.getElementById("choicesList");
+
     const MAX_CRED_LENGTH = 50;
 
+    // --- Helpers ---
     function show(el) { el.classList.remove("hidden"); }
     function hide(el) { el.classList.add("hidden"); }
 
@@ -108,7 +120,6 @@
           <path d="M7 12l3 3 7-7" />
         </svg>`;
     }
-
     function iconError(){
       return `
         <svg viewBox="0 0 24 24" class="svg error" aria-hidden="true">
@@ -116,7 +127,6 @@
           <path d="M8 8l8 8M16 8l-8 8" />
         </svg>`;
     }
-
     function resetResult() {
       resultTitle.textContent = "";
       resultPrice.textContent = "";
@@ -124,9 +134,37 @@
       resultJson.textContent = "";
       resultIcon.innerHTML = "";
     }
+    function clearChoices() {
+      choicesList.innerHTML = "";
+      hide(choices);
+    }
+    function renderChoices(arr) {
+      choicesList.innerHTML = "";
+      arr.forEach(cat => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip";
+        btn.textContent = cat;
+        btn.addEventListener("click", async () => {
+          input.value = cat;
+          await runAutomation(async () => {
+            const res = await fetch("/search-json", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ product: cat })
+            });
+            return res.json();
+          }, `Searching in "${cat}"…`);
+        });
+        choicesList.appendChild(btn);
+      });
+      show(choices);
+    }
 
+    // --- Core runner (handles success, choices, error) ---
     async function runAutomation(task, statusMessage = "Running automation…") {
       hide(result);
+      clearChoices();
       resetResult();
 
       runBtn.disabled = true; input.disabled = true;
@@ -141,8 +179,6 @@
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
-
-          // Try to render common fields
           if (data.title || data.price) {
             resultTitle.textContent = data.title ? `Product: ${data.title}` : "Success";
             resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
@@ -151,20 +187,27 @@
           } else {
             resultTitle.textContent = "Success";
           }
+          resultMeta.textContent = (data.meta ? data.meta + " • " : "") + `Completed in ${ms} ms`;
+          if (data.data) resultJson.textContent = JSON.stringify(data.data, null, 2);
 
-          const meta = data.meta ? data.meta + " • " : "";
-          resultMeta.textContent = meta + `Completed in ${ms} ms`;
+          hide(statusBox); show(result);
+        }
+        else if (data.status === "choices") {
+          resultIcon.innerHTML = iconError();
+          resultTitle.textContent = "Pick a category";
+          resultMeta.textContent = data.message || "No close match found.";
+          hide(statusBox); show(result);
 
-          // If there's a 'data' object (MCP), show it
-          if (data.data) {
-            resultJson.textContent = JSON.stringify(data.data, null, 2);
+          if (Array.isArray(data.categories) && data.categories.length) {
+            renderChoices(data.categories);
           }
-        } else {
+        }
+        else {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Automation failed";
           resultMeta.textContent = data.message || "Unknown error";
+          hide(statusBox); show(result);
         }
-        hide(statusBox); show(result);
       } catch (err) {
         resultIcon.innerHTML = iconError();
         resultTitle.textContent = "Network error";
@@ -176,8 +219,8 @@
       }
     }
 
-    // Product task (SPA JSON)
-    form.addEventListener("submit", async (e) => {
+    // --- Product task (SPA JSON) ---
+    document.getElementById("botForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       await runAutomation(async () => {
         const product = input.value.trim();
@@ -190,7 +233,7 @@
       });
     });
 
-    // Login test (with client-side 50-char guard)
+    // --- Login test (client-side 50-char guard) ---
     loginBtn.addEventListener("click", async () => {
       const user = loginUser.value || "";
       const pass = loginPass.value || "";
@@ -211,7 +254,7 @@
       }, "Running login automation…");
     });
 
-    // MCP AI Goal
+    // --- MCP AI Goal ---
     mcpBtn.addEventListener("click", async () => {
       const goal = goalInput.value.trim();
       if (!goal) return;
