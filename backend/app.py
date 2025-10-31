@@ -57,6 +57,7 @@ def make_session_permanent():
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def init_db():
+    """Create users table if missing and seed a default admin user once."""
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -66,6 +67,22 @@ def init_db():
                 password TEXT NOT NULL
             )
         """)
+        # ✅ Seed a default admin (override via env DEFAULT_USER / DEFAULT_PASS)
+        default_user = os.getenv("DEFAULT_USER", "admin")
+        default_pass = os.getenv("DEFAULT_PASS", "admin123")
+
+        # Only insert if not already present
+        cur.execute("SELECT 1 FROM users WHERE username = ?", (default_user,))
+        exists = cur.fetchone()
+        if not exists:
+            pw_hash = generate_password_hash(default_pass)
+            try:
+                cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (default_user, pw_hash))
+                print(f"✅ Default login added: {default_user} / {default_pass}")
+            except sqlite3.IntegrityError:
+                # Race-safe: if created by another process between SELECT and INSERT
+                pass
+
         conn.commit()
 
 
