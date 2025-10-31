@@ -1,4 +1,4 @@
-/* Base layout */
+/* Theme */
 :root {
   --bg: #0b0d10;
   --card: #12151a;
@@ -10,6 +10,7 @@
   --border: #1f242c;
 }
 
+/* Reset/base */
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -19,6 +20,7 @@ body {
   background: radial-gradient(1200px 600px at 10% -10%, #17202a 10%, var(--bg) 60%);
 }
 
+/* Layout */
 .container {
   max-width: 840px;
   padding: 24px 16px 80px;
@@ -26,7 +28,13 @@ body {
 }
 
 /* Header */
-.header { display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: center; margin-bottom: 12px; }
+.header {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
 .logo { font-size: 40px; line-height: 1; }
 .sub { color: var(--muted); margin-top: -2px; }
 
@@ -40,15 +48,25 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,.25);
 }
 
+/* Text / helpers */
 .label { font-weight: 600; margin-bottom: 8px; display: block; }
 .hint { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
 .mt-2 { margin-top: 12px; }
+.hidden { display: none; }
+.price { font-weight: 700; }
+.meta { color: var(--muted); }
 
-/* Inputs & Rows */
-.row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+/* Inputs & rows */
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
 .stack { display: grid; gap: 8px; }
 
-input[type="text"], input[type="password"] {
+input[type="text"],
+input[type="password"] {
   width: 100%;
   padding: 10px 12px;
   border-radius: 10px;
@@ -78,7 +96,7 @@ input::placeholder { color: #6c7a8a; }
   border: 1px solid var(--border);
 }
 
-/* Status / Spinner */
+/* Status + Spinner */
 .status {
   display: flex;
   gap: 10px;
@@ -96,17 +114,13 @@ input::placeholder { color: #6c7a8a; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.hidden { display: none; }
-
 /* Result visuals */
 .icon { margin-bottom: 6px; }
 .svg { width: 28px; height: 28px; fill: none; stroke-width: 2.5; }
 .svg.success { stroke: var(--ok); }
 .svg.error { stroke: var(--err); }
-.price { font-weight: 700; }
-.meta { color: var(--muted); }
 
-/* NEW: Category choices as “chips” */
+/* Category “chips” for fallback choices */
 .chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -124,7 +138,7 @@ input::placeholder { color: #6c7a8a; }
 }
 .chip:hover { background: #131923; }
 
-/* Flash messages (if you use them on other pages) */
+/* Flash list (if used on other pages) */
 .flash { list-style: none; padding: 0; margin: 10px 0 0; }
 .flash .success { color: var(--ok); }
 .flash .error { color: var(--err); }

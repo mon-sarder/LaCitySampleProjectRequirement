@@ -8,6 +8,7 @@
 </head>
 <body>
   <main class="container" role="main">
+    <!-- Header -->
     <header class="header">
       <div class="logo">🤖</div>
       <div>
@@ -16,7 +17,7 @@
       </div>
     </header>
 
-    <!-- Product task -->
+    <!-- Product / Category task -->
     <form id="botForm" class="card" autocomplete="off">
       <label for="productInput" class="label">Product / Category</label>
       <div class="row">
@@ -24,15 +25,18 @@
           id="productInput"
           name="product"
           type="text"
-          placeholder="e.g., Music, Food and Drink, Travel"
-          aria-label="Product to search"
+          placeholder="Try: Travel, Music, Food and Drink…"
+          aria-label="Product or category to search"
         />
         <button id="runBtn" type="submit" class="btn">Run Bot</button>
       </div>
-      <p class="hint">Uses <em>Books to Scrape</em>. If your entry doesn’t closely match a category, all categories will be listed below.</p>
+      <p class="hint">
+        Uses <em>Books to Scrape</em>. If your entry doesn’t closely match a category, all categories
+        will be listed below as clickable options.
+      </p>
     </form>
 
-    <!-- Login task (username/password with maxlength=50) -->
+    <!-- Demo login task -->
     <form id="loginForm" class="card" autocomplete="off" onsubmit="return false;">
       <p class="label">Demo Login Automation</p>
       <div class="stack">
@@ -46,23 +50,23 @@
       <p class="hint">Public test creds: <code>student</code> / <code>Password123</code>.</p>
     </form>
 
-    <!-- MCP AI Goal -->
+    <!-- MCP AI goal -->
     <form id="mcpForm" class="card" autocomplete="off" onsubmit="return false;">
       <label for="goalInput" class="label">AI Goal (MCP)</label>
       <div class="row">
-        <input id="goalInput" type="text" placeholder="e.g., Open Travel and return the first book's price" />
+        <input id="goalInput" type="text" placeholder="e.g., Open Travel and return the first book’s price" />
         <button id="mcpBtn" type="button" class="btn">Run AI Plan</button>
       </div>
       <p class="hint">Planner: <code>builtin</code> (no API key). Switch to <code>openai</code> in code if desired.</p>
     </form>
 
-    <!-- Loading / status -->
+    <!-- Status -->
     <section id="status" class="status hidden" aria-live="polite">
       <div class="spinner" aria-hidden="true"></div>
       <span id="statusText">Running automation…</span>
     </section>
 
-    <!-- Result card -->
+    <!-- Result -->
     <section id="result" class="card hidden" aria-live="polite">
       <div id="resultIcon" class="icon"></div>
       <div class="result-body">
@@ -73,7 +77,7 @@
       </div>
     </section>
 
-    <!-- NEW: Choices (categories) -->
+    <!-- Choices (categories fallback) -->
     <section id="choices" class="card hidden" aria-live="polite">
       <h2>Pick a Category</h2>
       <p class="hint">We couldn’t find a close match. Choose one of the available categories:</p>
@@ -82,7 +86,7 @@
   </main>
 
   <script>
-    // --- Elements ---
+    // Elements
     const form = document.getElementById("botForm");
     const runBtn = document.getElementById("runBtn");
     const input = document.getElementById("productInput");
@@ -109,10 +113,9 @@
 
     const MAX_CRED_LENGTH = 50;
 
-    // --- Helpers ---
+    // UI utils
     function show(el) { el.classList.remove("hidden"); }
     function hide(el) { el.classList.add("hidden"); }
-
     function iconSuccess(){
       return `
         <svg viewBox="0 0 24 24" class="svg success" aria-hidden="true">
@@ -161,7 +164,7 @@
       show(choices);
     }
 
-    // --- Core runner (handles success, choices, error) ---
+    // Core runner (shared UX)
     async function runAutomation(task, statusMessage = "Running automation…") {
       hide(result);
       clearChoices();
@@ -179,30 +182,36 @@
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
-          if (data.title || data.price) {
-            resultTitle.textContent = data.title ? `Product: ${data.title}` : "Success";
-            resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
-          } else if (data.message) {
-            resultTitle.textContent = data.message;
+          if (data.items && data.category) {
+            // success from /search-json (category + items)
+            resultTitle.textContent = `Category: ${data.category}`;
+            resultPrice.textContent = "";
+            const lines = (data.items || []).map(it => `• ${it.title} — ${it.price}`).join("\n");
+            resultJson.textContent = lines || "(No items on first page)";
           } else {
-            resultTitle.textContent = "Success";
+            // generic success
+            if (data.title || data.price) {
+              resultTitle.textContent = data.title ? `Product: ${data.title}` : "Success";
+              resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
+            } else if (data.message) {
+              resultTitle.textContent = data.message;
+            } else {
+              resultTitle.textContent = "Success";
+            }
           }
           resultMeta.textContent = (data.meta ? data.meta + " • " : "") + `Completed in ${ms} ms`;
-          if (data.data) resultJson.textContent = JSON.stringify(data.data, null, 2);
-
           hide(statusBox); show(result);
-        }
-        else if (data.status === "choices") {
+
+        } else if (data.status === "choices") {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Pick a category";
           resultMeta.textContent = data.message || "No close match found.";
           hide(statusBox); show(result);
-
           if (Array.isArray(data.categories) && data.categories.length) {
             renderChoices(data.categories);
           }
-        }
-        else {
+
+        } else {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Automation failed";
           resultMeta.textContent = data.message || "Unknown error";
@@ -219,8 +228,8 @@
       }
     }
 
-    // --- Product task (SPA JSON) ---
-    document.getElementById("botForm").addEventListener("submit", async (e) => {
+    // Product flow (SPA)
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
       await runAutomation(async () => {
         const product = input.value.trim();
@@ -233,7 +242,7 @@
       });
     });
 
-    // --- Login test (client-side 50-char guard) ---
+    // Login test (client-side 50-char guard mirrors backend)
     loginBtn.addEventListener("click", async () => {
       const user = loginUser.value || "";
       const pass = loginPass.value || "";
@@ -254,7 +263,7 @@
       }, "Running login automation…");
     });
 
-    // --- MCP AI Goal ---
+    // MCP AI goal
     mcpBtn.addEventListener("click", async () => {
       const goal = goalInput.value.trim();
       if (!goal) return;
