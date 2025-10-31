@@ -1,64 +1,84 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Product Search</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="UTF-8">
+  <title>Search Products</title>
   <style>
-    body { font-family: system-ui, Arial; margin: 2rem; }
-    header { display:flex; justify-content:space-between; align-items:center; }
-    form { display:flex; gap:.5rem; margin: 1rem 0; }
-    input[type="text"] { padding:.6rem; font-size:1rem; width:320px; }
-    button { padding:.6rem 1rem; font-size:1rem; cursor:pointer; }
-
-    /* --- Animation styles --- */
-    .result-box {
-      border:1px solid #ddd;
-      padding:1rem;
-      border-radius:.5rem;
-      margin-top:1rem;
-      opacity:0;
-      transform:translateY(15px);
-      transition:opacity .4s ease, transform .4s ease;
+    body { font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 12px; }
+    .top { margin-bottom: 12px; }
+    .muted { color: #666; }
+    .error { color: #b00020; font-weight: 600; margin-top: 8px; }
+    .msg { margin-top: 8px; }
+    .row { display: inline-flex; gap: 8px; align-items: center; margin: 8px 0; }
+    input[type="text"] { padding: 6px 8px; font-size: 16px; width: 260px; }
+    button, .chip-btn {
+      padding: 6px 10px; font-size: 15px; cursor: pointer; border-radius: 8px;
+      border: 1px solid #ccc; background: #f2f4f7;
     }
-    .result-box.show {
-      opacity:1;
-      transform:translateY(0);
-    }
-    .success { border-left:5px solid #0a7d00; background:#e9fbe9; }
-    .fail    { border-left:5px solid #b00020; background:#fde8ea; }
+    .chip-btn { margin: 6px 6px 0 0; }
+    .chip-btn:hover { background: #e7ebf0; }
+    .items { margin-top: 12px; border-top: 1px solid #ddd; padding-top: 10px; }
+    .item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 6px 0; border-bottom: 1px dashed #eee; }
+    .price { font-weight: 600; }
+    .actions { margin: 10px 0; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Search Products</h1>
-    <div>
-      Signed in as <strong>{{ username }}</strong> |
-      <a href="{{ url_for('logout') }}">Logout</a>
-    </div>
-  </header>
+  <h1>Search Products</h1>
 
-  <form method="post" autocomplete="off">
-    <input name="query" type="text" placeholder="Type a product…" value="{{ query }}" required />
+  <div class="top">
+    Signed in as <strong>{{ username }}</strong> |
+    <a href="{{ url_for('logout') }}">Logout</a>
+  </div>
+
+  <!-- Search form -->
+  <form method="POST" class="row">
+    <input type="text" name="query" placeholder="Type a category (e.g., Travel, Music)" value="{{ query or '' }}">
     <button type="submit">Search</button>
   </form>
 
+  <!-- Single button to list ALL categories -->
+  <form method="POST" class="actions">
+    <input type="hidden" name="list_all" value="1">
+    <button type="submit">Show available categories</button>
+  </form>
+
   {% if error %}
-    <div class="result-box fail show">{{ error }}</div>
-  {% elif result %}
-    <div class="result-box success show">
-      <h3>Result</h3>
-      <pre style="white-space:pre-wrap">{{ result }}</pre>
+    <div class="error">{{ error }}</div>
+  {% endif %}
+
+  {% if message %}
+    <div class="msg">{{ message }}</div>
+  {% endif %}
+
+  {# Category choices (rendered after Search when no close match OR after clicking the button) #}
+  {% if choices %}
+    <div class="muted">Categories:</div>
+    <div>
+      {% for c in choices %}
+        <form method="POST" style="display:inline;">
+          <input type="hidden" name="query" value="{{ c }}">
+          <button class="chip-btn" type="submit">{{ c }}</button>
+        </form>
+      {% endfor %}
     </div>
   {% endif %}
 
-  <script>
-    // adds animation automatically after DOM is ready
-    window.addEventListener("DOMContentLoaded", () => {
-      document.querySelectorAll('.result-box').forEach(el => {
-        setTimeout(() => el.classList.add('show'), 50);
-      });
-    });
-  </script>
+  {# Items list when a category has been picked #}
+  {% if items %}
+    <div class="items">
+      <div class="muted">Category: <strong>{{ picked }}</strong>{% if meta %} — <span class="muted">{{ meta }}</span>{% endif %}</div>
+      {% for it in items %}
+        <div class="item">
+          <div>{{ it.title }}</div>
+          <div class="price">{{ it.price }}</div>
+        </div>
+      {% endfor %}
+      {% if not items %}
+        <div class="muted">No items found on the first page.</div>
+      {% endif %}
+    </div>
+  {% endif %}
 </body>
 </html>
