@@ -31,18 +31,18 @@ app.permanent_session_lifetime = timedelta(minutes=30)  # session timeout
 MAX_CRED_LENGTH = 50  # username/password hard limit
 DB_PATH = os.path.join(BASE_DIR, "users.db")
 
-# Optional rate limiter (won't break if package isn't installed)
+# (Optional) Rate limiter if installed; otherwise silently skipped
 try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
     limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
 except Exception:
-    limiter = None  # silently skip if not available
+    limiter = None
 
 
 @app.after_request
 def set_secure_headers(resp):
-    # Solid defaults; relax CSP if you later use external CDNs.
+    # Solid defaults; relax CSP if you use external CDNs.
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
@@ -122,7 +122,7 @@ def login_required(view_func):
 # ── Pages (classic flow) ──────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    # If you prefer the SPA demo as your landing page, return render_template("index.html") here.
+    # If you prefer the SPA demo as landing, return render_template("index.html") here.
     if "user" in session:
         return redirect(url_for("search_page"))
     return redirect(url_for("login"))
@@ -215,13 +215,13 @@ def search_page():
     return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
 
-# Optional SPA demo page you built earlier (Ajax -> JSON APIs)
+# Optional SPA demo page (AJAX → JSON APIs)
 @app.route("/demo")
 def demo_index():
     return render_template("index.html")
 
 
-# ── JSON APIs (used by SPA demo) ──────────────────────────────────────────────
+# ── JSON APIs (SPA) ───────────────────────────────────────────────────────────
 @app.route("/search-json", methods=["POST"])
 def search_json():
     try:
@@ -258,6 +258,27 @@ def login_test():
         return jsonify({"status": "error", "message": msg}), 400
 
     result = run_login_test(username=username, password=password)
+    return jsonify(result)
+
+
+# ── MCP “AI Brain” endpoint ───────────────────────────────────────────────────
+@app.route("/mcp/run", methods=["POST"])
+def mcp_run():
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({"status": "error", "message": "Invalid JSON payload."}), 400
+
+    goal = (data.get("goal") or "").strip()
+    if not goal:
+        return jsonify({"status": "error", "message": "Please provide a non-empty 'goal'."}), 400
+
+    planner = (data.get("planner") or "builtin").lower()  # "builtin" or "openai"
+    headless = not bool(os.environ.get("HEADFUL") in ("1", "true", "True"))
+
+    # Import here to avoid Playwright import cost on app boot
+    from mcp_agent import run_ai_goal
+    result = run_ai_goal(goal=goal, planner=planner, headless=headless)
     return jsonify(result)
 
 

@@ -12,7 +12,7 @@
       <div class="logo">🤖</div>
       <div>
         <h1>Playwright Robot Driver</h1>
-        <p class="sub">Run a fixed browser task and see results below.</p>
+        <p class="sub">Run a fixed browser task, a demo login, or an AI-planned task.</p>
       </div>
     </header>
 
@@ -29,10 +29,10 @@
         />
         <button id="runBtn" type="submit" class="btn">Run Bot</button>
       </div>
-      <p class="hint">This demo uses <em>Books to Scrape</em> and opens the first item in the chosen category.</p>
+      <p class="hint">Uses <em>Books to Scrape</em>. Opens the first item in the chosen category.</p>
     </form>
 
-    <!-- Login task (username/password with maxlength to prevent overly-long input) -->
+    <!-- Login task (username/password with maxlength=50) -->
     <form id="loginForm" class="card" autocomplete="off" onsubmit="return false;">
       <p class="label">Demo Login Automation</p>
       <div style="display:grid;gap:8px;">
@@ -43,7 +43,17 @@
         <div></div>
         <button id="loginBtn" type="button" class="btn">Run Login Test</button>
       </div>
-      <p class="hint">Uses the public PracticeTestAutomation login page (test creds: <code>student</code>/<code>Password123</code>).</p>
+      <p class="hint">Public test creds: <code>student</code> / <code>Password123</code>.</p>
+    </form>
+
+    <!-- MCP AI Goal -->
+    <form id="mcpForm" class="card" autocomplete="off" onsubmit="return false;">
+      <label for="goalInput" class="label">AI Goal (MCP)</label>
+      <div class="row">
+        <input id="goalInput" type="text" placeholder="e.g., Open Travel and return the first book's price" />
+        <button id="mcpBtn" type="button" class="btn">Run AI Plan</button>
+      </div>
+      <p class="hint">Planner: <code>builtin</code> (no API key) — set planner to <code>openai</code> in code to use your model.</p>
     </form>
 
     <!-- Loading / status -->
@@ -59,6 +69,7 @@
         <h2 id="resultTitle"></h2>
         <p id="resultPrice" class="price"></p>
         <p id="resultMeta" class="meta"></p>
+        <pre id="resultJson" class="meta" style="white-space:pre-wrap;"></pre>
       </div>
     </section>
   </main>
@@ -72,6 +83,9 @@
     const loginUser = document.getElementById("loginUser");
     const loginPass = document.getElementById("loginPass");
 
+    const mcpBtn = document.getElementById("mcpBtn");
+    const goalInput = document.getElementById("goalInput");
+
     const statusBox = document.getElementById("status");
     const statusText = document.getElementById("statusText");
 
@@ -80,6 +94,7 @@
     const resultTitle = document.getElementById("resultTitle");
     const resultPrice = document.getElementById("resultPrice");
     const resultMeta = document.getElementById("resultMeta");
+    const resultJson = document.getElementById("resultJson");
 
     const MAX_CRED_LENGTH = 50;
 
@@ -102,58 +117,21 @@
         </svg>`;
     }
 
-    // Product task submit
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      await runAutomation(async () => {
-        const product = input.value.trim();
-        const res = await fetch("/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product })
-        });
-        return res.json();
-      });
-    });
-
-    // Login test click — client-side length check before sending
-    loginBtn.addEventListener("click", async () => {
-      // client-side validation
-      const user = loginUser.value || "";
-      const pass = loginPass.value || "";
-
-      if (user.length > MAX_CRED_LENGTH || pass.length > MAX_CRED_LENGTH) {
-        // show error card and do NOT send to server
-        resultIcon.innerHTML = iconError();
-        resultTitle.textContent = "Input rejected";
-        resultPrice.textContent = "";
-        resultMeta.textContent = `Possible buffer overflow attempt: username or password exceeds ${MAX_CRED_LENGTH} characters.`;
-        hide(statusBox);
-        show(result);
-        return;
-      }
-
-      await runAutomation(async () => {
-        const res = await fetch("/login-test", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: user, password: pass })
-        });
-
-        // if server rejects with 400, still parse JSON for message
-        const json = await res.json();
-        return json;
-      }, "Running login automation...");
-    });
-
-    async function runAutomation(task, statusMessage = "Running automation…") {
-      hide(result);
+    function resetResult() {
       resultTitle.textContent = "";
       resultPrice.textContent = "";
       resultMeta.textContent = "";
+      resultJson.textContent = "";
       resultIcon.innerHTML = "";
+    }
 
-      runBtn.disabled = true; input.disabled = true; loginBtn.disabled = true;
+    async function runAutomation(task, statusMessage = "Running automation…") {
+      hide(result);
+      resetResult();
+
+      runBtn.disabled = true; input.disabled = true;
+      loginBtn.disabled = true; goalInput.disabled = true; mcpBtn.disabled = true;
+
       show(statusBox); statusText.textContent = statusMessage;
 
       const t0 = performance.now();
@@ -163,15 +141,27 @@
 
         if (data.status === "success") {
           resultIcon.innerHTML = iconSuccess();
-          resultTitle.textContent = data.title ? `Product: ${data.title}` : "Login Automation Success";
-          resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
-          resultMeta.textContent = data.meta
-            ? `${data.meta} • Completed in ${ms} ms`
-            : `${data.message || ""} • Completed in ${ms} ms`;
+
+          // Try to render common fields
+          if (data.title || data.price) {
+            resultTitle.textContent = data.title ? `Product: ${data.title}` : "Success";
+            resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
+          } else if (data.message) {
+            resultTitle.textContent = data.message;
+          } else {
+            resultTitle.textContent = "Success";
+          }
+
+          const meta = data.meta ? data.meta + " • " : "";
+          resultMeta.textContent = meta + `Completed in ${ms} ms`;
+
+          // If there's a 'data' object (MCP), show it
+          if (data.data) {
+            resultJson.textContent = JSON.stringify(data.data, null, 2);
+          }
         } else {
           resultIcon.innerHTML = iconError();
           resultTitle.textContent = "Automation failed";
-          resultPrice.textContent = "";
           resultMeta.textContent = data.message || "Unknown error";
         }
         hide(statusBox); show(result);
@@ -181,9 +171,59 @@
         resultMeta.textContent = String(err);
         hide(statusBox); show(result);
       } finally {
-        runBtn.disabled = false; input.disabled = false; loginBtn.disabled = false;
+        runBtn.disabled = false; input.disabled = false;
+        loginBtn.disabled = false; goalInput.disabled = false; mcpBtn.disabled = false;
       }
     }
+
+    // Product task (SPA JSON)
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await runAutomation(async () => {
+        const product = input.value.trim();
+        const res = await fetch("/search-json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product })
+        });
+        return res.json();
+      });
+    });
+
+    // Login test (with client-side 50-char guard)
+    loginBtn.addEventListener("click", async () => {
+      const user = loginUser.value || "";
+      const pass = loginPass.value || "";
+      if (user.length > MAX_CRED_LENGTH || pass.length > MAX_CRED_LENGTH) {
+        resultIcon.innerHTML = iconError();
+        resultTitle.textContent = "Input rejected";
+        resultMeta.textContent = `Possible buffer overflow attempt: username or password exceeds ${MAX_CRED_LENGTH} characters.`;
+        hide(statusBox); show(result);
+        return;
+      }
+      await runAutomation(async () => {
+        const res = await fetch("/login-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: user, password: pass })
+        });
+        return res.json();
+      }, "Running login automation…");
+    });
+
+    // MCP AI Goal
+    mcpBtn.addEventListener("click", async () => {
+      const goal = goalInput.value.trim();
+      if (!goal) return;
+      await runAutomation(async () => {
+        const res = await fetch("/mcp/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ goal, planner: "builtin" })
+        });
+        return res.json();
+      }, "Planning with MCP and executing…");
+    });
   </script>
 </body>
 </html>
