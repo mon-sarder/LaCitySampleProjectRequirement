@@ -1,70 +1,93 @@
 # robot_driver.py
+"""
+Fast Playwright helpers for the Required Core demo.
+- Headless Chromium
+- Tight timeouts (3s / 5s)
+- domcontentloaded waits
+- Minimal scraping
+
+Public API:
+  - search_product(query: str, agent="BroncoMCP/1.0", headless=True) -> dict
+  - list_categories(agent="BroncoMCP/1.0", headless=True) -> dict
+"""
+
 import asyncio
+from contextlib import asynccontextmanager
 from playwright.async_api import async_playwright
 
+# ---------- Speed / runtime knobs ----------
+DEFAULT_TIMEOUT_MS = 3000          # element waits
+DEFAULT_NAV_TIMEOUT_MS = 5000      # navigation waits
+HEADLESS_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+]
+
+# Shared UA with mcp_agent.py
 CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
 
+
+@asynccontextmanager
+async def _browser_ctx(headless: bool = True):
+    """Fast chromium context with tight timeouts."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless, args=HEADLESS_ARGS)
+        context = await browser.new_context(user_agent=CUSTOM_UA)
+        context.set_default_timeout(DEFAULT_TIMEOUT_MS)
+        context.set_default_navigation_timeout(DEFAULT_NAV_TIMEOUT_MS)
+        page = await context.new_page()
+        try:
+            yield browser, context, page
+        finally:
+            await browser.close()
+
+
+async def _goto(page, url: str):
+    await page.goto(url, wait_until="domcontentloaded")
+
+
 async def _collect_categories(page):
-    # Returns all non-empty category names (excluding the root "Books")
+    """Return all non-empty category names except root 'Books'."""
     cats = await page.locator(".side_categories a").all_inner_texts()
     cats = [c.strip() for c in cats if c.strip()]
-    cats = [c for c in cats if c.lower() != "books"]
-    return cats
+    return [c for c in cats if c.lower() != "books"]
 
-async def _open_site(headless=True):
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _ctx():
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
-            context = await browser.new_context(user_agent=CUSTOM_UA)
-            page = await context.new_page()
-            try:
-                await page.goto("https://books.toscrape.com/")
-                await page.wait_for_load_state("domcontentloaded")
-                yield browser, context, page
-            finally:
-                await browser.close()
-    return _ctx()
 
 async def _search_async(query: str, agent: str, headless: bool = True):
-    # Normalize query
     query = (query or "").strip()
 
-    async with (await _open_site(headless=headless)) as (browser, context, page):
+    async with _browser_ctx(headless=headless) as (_b, _c, page):
+        await _goto(page, "https://books.toscrape.com/")
         cats = await _collect_categories(page)
 
-        # If query is empty, explicitly return ALL categories (the "list all" case)
+        # List-all path (empty query or explicit "show categories" flow)
         if not query:
             return {
                 "status": "choices",
                 "categories": cats,
                 "message": "Available categories:",
-                "agent": agent
+                "agent": agent,
             }
 
-        # Try a case-insensitive contains match first
-        match = None
+        # Try contains-match first
         qlower = query.lower()
-        for c in cats:
-            if qlower in c.lower():
-                match = c
-                break
+        match = next((c for c in cats if qlower in c.lower()), None)
 
-        # If no close match, offer choices
         if not match:
             return {
                 "status": "choices",
                 "categories": cats,
                 "message": f"No close category match for '{query}'. Pick one of the available categories.",
-                "agent": agent
+                "agent": agent,
             }
 
-        # Open the matched category and collect items
+        # Open matched category (fast waits)
         await page.click(f"text={match}")
-        await page.wait_for_selector(".product_pod")
+        await page.locator(".product_pod").first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
 
+        # Grab first page items only (fast)
         titles = await page.locator(".product_pod h3 a").all_inner_texts()
         prices = await page.locator(".price_color").all_inner_texts()
         items = [{"title": t.strip(), "price": p.strip()} for t, p in zip(titles, prices)]
@@ -74,23 +97,25 @@ async def _search_async(query: str, agent: str, headless: bool = True):
             "category": match,
             "items": items,
             "meta": f"{len(items)} items found",
-            "agent": agent
+            "agent": agent,
         }
+
 
 def search_product(query: str, agent="BroncoMCP/1.0", headless: bool = True):
     """
-    Main entry point used by Flask.
-    - If query is empty/blank => returns all categories (status="choices")
-    - If query partially matches a category => returns items (status="success")
-    - Otherwise => returns choices for user to pick
+    Synchronous wrapper for Flask.
+      - Empty query => list categories
+      - Partial match => open category and list items
+      - Otherwise => return suggestions
     """
-    print(f"[{agent}] search_product query='{query}'")
     return asyncio.run(_search_async(query, agent, headless=headless))
 
-# Optional helper if you want to list categories directly elsewhere
+
 def list_categories(agent="BroncoMCP/1.0", headless: bool = True):
     async def _list():
-        async with (await _open_site(headless=headless)) as (_b, _c, page):
+        async with _browser_ctx(headless=headless) as (_b, _c, page):
+            await _goto(page, "https://books.toscrape.com/")
             cats = await _collect_categories(page)
             return {"status": "choices", "categories": cats, "message": "Available categories:", "agent": agent}
+
     return asyncio.run(_list())

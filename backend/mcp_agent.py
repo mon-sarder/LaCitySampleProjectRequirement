@@ -1,94 +1,158 @@
 # mcp_agent.py
 """
-MCP AI Goal Executor — Intelligent Router
------------------------------------------
-Executes natural-language goals by automatically selecting
-the correct automation driver (search, login, or browse).
+A lightweight "AI Brain" that executes a goal in a single, fast Playwright session.
 
-All Playwright sessions use the shared custom User-Agent:
-    BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)
+This module is intentionally minimal and speed-tuned:
+- Headless Chromium with slim flags
+- Tight timeouts (3s / 5s)
+- domcontentloaded navigation
+- Batches steps rather than many tool calls
+
+Public API:
+  - run_ai_goal(goal: str, planner: str = "builtin", headless: bool = True) -> dict
 """
 
+import re
 import asyncio
+from contextlib import asynccontextmanager
+from typing import Dict, Any
+
 from playwright.async_api import async_playwright
-from robot_driver import search_product
-from login_driver import run_login_test
 
-CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
+# Reuse the same UA as robot_driver; fall back if not importable.
+try:
+    from robot_driver import CUSTOM_UA
+except Exception:
+    CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
+
+DEFAULT_TIMEOUT_MS = 3000
+DEFAULT_NAV_TIMEOUT_MS = 5000
+HEADLESS_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+]
 
 
-async def _simple_scrape(goal: str, agent: str, headless: bool = True):
-    """Default fallback: open BooksToScrape and read category."""
+@asynccontextmanager
+async def _fast_ctx(headless: bool = True):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+        browser = await p.chromium.launch(headless=headless, args=HEADLESS_ARGS)
         context = await browser.new_context(user_agent=CUSTOM_UA)
+        context.set_default_timeout(DEFAULT_TIMEOUT_MS)
+        context.set_default_navigation_timeout(DEFAULT_NAV_TIMEOUT_MS)
         page = await context.new_page()
-        await page.goto("https://books.toscrape.com/")
-        await page.wait_for_selector(".product_pod")
-        title = await page.locator(".product_pod h3 a").nth(0).inner_text()
-        price = await page.locator(".price_color").nth(0).inner_text()
-        await browser.close()
-        return {
-            "status": "success",
-            "goal": goal,
-            "title": title,
-            "price": price,
-            "meta": "Simple scrape completed.",
-            "agent": agent
-        }
+        try:
+            yield browser, context, page
+        finally:
+            await browser.close()
 
 
-async def _run_ai_goal_async(goal: str,
-                             planner: str = "builtin",
-                             headless: bool = True,
-                             agent: str = "BroncoMCP/1.0"):
+async def _goto(page, url: str):
+    await page.goto(url, wait_until="domcontentloaded")
+
+
+# ---------------------- Builtin goal executor ----------------------
+
+async def _builtin_executor(goal: str, headless: bool = True) -> Dict[str, Any]:
     """
-    Interprets the goal and routes execution:
-      - If goal includes “login”, use login_driver
-      - If goal includes “search”, use robot_driver
-      - Otherwise, do a simple autonomous scrape
+    Heuristic executor that handles common goals for your assignment:
+      - open /demo or /search
+      - list categories
+      - search a category
+      - return first N items
     """
-    print(f"[{agent}] Executing MCP AI goal: '{goal}' via {planner}")
+    goal_l = goal.lower()
 
-    goal_lower = goal.lower()
+    async with _fast_ctx(headless=headless) as (_b, _c, page):
+        base = "http://localhost:5001"
 
-    # 1. Handle login tasks
-    if "login" in goal_lower:
-        # extract basic credentials if given
-        username = "student"
-        password = "Password123"
-        if "admin" in goal_lower:
-            username = "admin"
-            password = "admin123"
-        print(f"[{agent}] Routing goal to login_driver for {username}")
-        result = run_login_test(username=username, password=password, agent=agent)
-        result["goal"] = goal
-        result["planner"] = planner
-        return result
+        # 1) decide landing page
+        if "/search" in goal_l:
+            target = f"{base}/search"
+        elif "/demo" in goal_l:
+            target = f"{base}/demo"
+        else:
+            # prefer search (protected page) so we can test full flow after login if needed
+            target = f"{base}/search"
 
-    # 2. Handle product/category search tasks
-    elif any(k in goal_lower for k in ["search", "find", "category", "book", "browse"]):
-        import re
-        # try to extract a simple keyword after "search"
-        match = re.search(r"search for ([\w\s]+)", goal_lower)
-        keyword = match.group(1).strip() if match else "travel"
-        print(f"[{agent}] Routing goal to robot_driver for query '{keyword}'")
-        data = search_product(keyword, agent=agent)
-        data["goal"] = goal
-        data["planner"] = planner
-        return data
+        await _goto(page, target)
 
-    # 3. Default: simple scraping
-    else:
-        print(f"[{agent}] Running simple fallback scrape.")
-        return await _simple_scrape(goal, agent, headless=headless)
+        # 2) If login page appears, use default admin creds (your app creates them)
+        if "login" in (page.url or "") or (await page.locator('input[name="username"]').count() and await page.locator('button[type="submit"]').count()):
+            try:
+                await page.fill('input[name="username"]', "admin")
+                await page.fill('input[name="password"]', "admin123")
+                await page.click('button[type="submit"]')
+                # After login, we should land on /search
+                await page.wait_for_load_state("domcontentloaded")
+            except Exception:
+                pass  # continue anyway
+
+        # 3) list categories if asked
+        if "list categories" in goal_l or "all categories" in goal_l:
+            btn = page.locator('button[name="list_all"]')
+            if await btn.count():
+                await btn.click()
+                await page.wait_for_load_state("domcontentloaded")
+            # read category chips (server renders anchors with class 'category-chip' in index.html)
+            chips = page.locator(".category-list a")
+            cats = [c.strip() for c in await chips.all_inner_texts()] if await chips.count() else []
+            return {"status": "success", "action": "list_categories", "categories": cats}
+
+        # 4) extract desired category from goal, e.g., "travel", "science"
+        m = re.search(r"(?:category|search)\s+(?:for\s+)?['\"]?([a-zA-Z ]+)['\"]?", goal_l)
+        desired = m.group(1).strip() if m else None
+
+        if desired:
+            # try the plain search bar first
+            if await page.locator('input[name="query"]').count():
+                await page.fill('input[name="query"]', desired)
+                if await page.locator('button[type="submit"]').count():
+                    await page.click('button[type="submit"]')
+                    await page.wait_for_load_state("domcontentloaded")
+
+            # If the page shows "Available categories", click the closest chip if rendered
+            choices = page.locator(".category-list a")
+            if await choices.count():
+                # pick the first chip that fuzzy matches desired
+                texts = await choices.all_inner_texts()
+                pick_idx = None
+                d = desired.lower()
+                for idx, t in enumerate(texts):
+                    if d in t.lower():
+                        pick_idx = idx
+                        break
+                if pick_idx is None and texts:
+                    pick_idx = 0  # fall back to first
+                if pick_idx is not None:
+                    await choices.nth(pick_idx).click()
+                    await page.wait_for_load_state("domcontentloaded")
+
+        # 5) gather first few items if present
+        if await page.locator(".product_pod").count():
+            titles = await page.locator(".product_pod h3 a").all_inner_texts()
+            prices = await page.locator(".price_color").all_inner_texts()
+            items = [{"title": t.strip(), "price": p.strip()} for t, p in zip(titles, prices)]
+            return {"status": "success", "action": "collect_items", "count": len(items), "items": items[:5]}
+
+        # Nothing matched
+        return {"status": "noop", "message": "No items found or goal too vague.", "url": page.url}
 
 
-def run_ai_goal(goal: str,
-                planner: str = "builtin",
-                headless: bool = True,
-                agent: str = "BroncoMCP/1.0"):
+# ---------------------- Public API ----------------------
+
+def run_ai_goal(goal: str, planner: str = "builtin", headless: bool = True) -> Dict[str, Any]:
     """
-    Public synchronous entrypoint for app.py
+    Entry point called by Flask /mcp/run.
+    - planner='builtin' runs a fast, single-session executor (recommended)
+    - in future you could wire other planners that emit steps
     """
-    return asyncio.run(_run_ai_goal_async(goal, planner, headless, agent))
+    async def _run():
+        if planner == "builtin":
+            return await _builtin_executor(goal, headless=headless)
+        # Fallback: still do builtin to keep UX snappy
+        return await _builtin_executor(goal, headless=headless)
+
+    return asyncio.run(_run())
