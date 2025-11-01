@@ -1,159 +1,64 @@
-/* Base reset */
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Create account</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="auth auth-register">
+  <main class="auth-card">
+    <h1>Create your account</h1>
+    <p class="subtle">Pick a username and a strong password.</p>
 
-html, body {
-  height: 100%;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-  color: #0f172a;
-}
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% if msgs %}
+        <ul class="flash">
+          {% for cat, msg in msgs %}
+            <li class="{{ cat }}">{{ msg }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
 
-/* Center authentication pages */
-.auth {
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
-}
+    <form method="POST" class="form" id="regForm" novalidate>
+      <label>Username</label>
+      <input type="text" name="username" maxlength="50" value="{{ username or '' }}" required />
 
-/* Differentiate background per page */
-.auth-login {
-  background: linear-gradient(145deg, #f0f4ff 0%, #e8edff 50%, #f7f9ff 100%);
-}
+      <div class="row">
+        <div class="col">
+          <label>Password</label>
+          <input id="pw" type="password" name="password" maxlength="50" required />
+        </div>
+        <div class="col">
+          <label>Confirm password</label>
+          <input id="pw2" type="password" name="confirm" maxlength="50" required />
+        </div>
+      </div>
 
-.auth-register {
-  background: radial-gradient(circle at top left, #fff2f0, #ffe7e1 40%, #fff 80%);
-}
+      <div id="pwHint" class="hint muted mt8">Passwords must match.</div>
 
-/* Card container */
-.auth-card {
-  width: min(480px, 90vw);
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
-  padding: 32px 28px;
-}
+      <button type="submit" class="btn accent mt12" id="submitBtn">Create account</button>
+    </form>
 
-.auth-card h1 {
-  margin-bottom: 8px;
-  font-size: 26px;
-  font-weight: 700;
-}
+    <p class="muted mt8">Already have an account?
+      <a href="{{ url_for('login') }}">Sign in</a>
+    </p>
+  </main>
 
-.subtle {
-  color: #64748b;
-  margin-bottom: 14px;
-}
-
-/* Flash message styling */
-.flash {
-  list-style: none;
-  margin-bottom: 12px;
-}
-.flash li {
-  padding: 8px 12px;
-  border-radius: 8px;
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-.flash .success { background: #ecfdf5; color: #065f46; }
-.flash .error { background: #fef2f2; color: #991b1b; }
-.flash .info { background: #eff6ff; color: #1e3a8a; }
-
-/* Form layout */
-.form {
-  display: grid;
-  gap: 12px;
-}
-
-label {
-  font-weight: 600;
-  color: #1e293b;
-  margin-top: 4px;
-}
-
-input[type="text"],
-input[type="password"] {
-  width: 100%;
-  padding: 10px 12px;
-  font-size: 15px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-input[type="text"]:focus,
-input[type="password"]:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-}
-
-/* Buttons */
-.btn {
-  padding: 10px 16px;
-  font-weight: 600;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.15s ease-in-out;
-}
-
-.btn.primary {
-  background: #2563eb;
-  color: #ffffff;
-}
-
-.btn.primary:hover {
-  background: #1d4ed8;
-}
-
-.btn.accent {
-  background: #ef4444;
-  color: #ffffff;
-}
-
-.btn.accent:hover {
-  background: #dc2626;
-}
-
-/* Utility classes */
-.muted {
-  color: #64748b;
-}
-
-.mt8 {
-  margin-top: 8px;
-}
-
-.mt12 {
-  margin-top: 12px;
-}
-
-/* Form row layout (used in register.html) */
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.col {
-  display: grid;
-  gap: 6px;
-}
-
-/* Password hint feedback */
-.hint {
-  font-size: 13px;
-}
-
-.hint.ok {
-  color: #15803d;
-}
-
-.hint.err {
-  color: #b91c1c;
-}
+  <script>
+    // live password match feedback
+    const pw  = document.getElementById('pw');
+    const pw2 = document.getElementById('pw2');
+    const hint = document.getElementById('pwHint');
+    const submit = document.getElementById('submitBtn');
+    function check() {
+      const a = pw.value, b = pw2.value;
+      if (!a || !b) { hint.textContent="Passwords must match."; hint.className="hint muted mt8"; submit.disabled=false; return; }
+      if (a === b) { hint.textContent="✅ Passwords match"; hint.className="hint ok mt8"; submit.disabled=false; }
+      else { hint.textContent="❌ Passwords do not match"; hint.className="hint err mt8"; submit.disabled=true; }
+    }
+    pw.addEventListener('input', check);
+    pw2.addEventListener('input', check);
+  </script>
+</body>
+</html>
