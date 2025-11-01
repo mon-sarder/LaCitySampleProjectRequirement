@@ -25,17 +25,41 @@ app = Flask(
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 app.permanent_session_lifetime = timedelta(minutes=30)
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
+
+# auto reload templates during dev
+app.jinja_env.auto_reload = True
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
 MAX_CRED_LENGTH = 50
 DB_PATH = os.path.join(BASE_DIR, "users.db")
 AGENT_ID = "BroncoBot/1.0"
 
-# ── Security headers ─────────────────────────────────────────
+# ── CSP (Option A: relaxed in dev) ───────────────────────────
+# Set RELAXED_CSP=0 to switch to stricter production policy.
+DEV_RELAXED_CSP = os.environ.get("RELAXED_CSP", "1") == "1"
+
 @app.after_request
 def set_secure_headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
-    resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
+
+    if DEV_RELAXED_CSP:
+        # Relaxed for local development & MCP/Playwright testing
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src  'self' 'unsafe-inline'; "
+            "connect-src 'self' http://localhost:5001 http://127.0.0.1:5001; "
+            "form-action 'self'; base-uri 'self'; frame-ancestors 'self';"
+        )
+    else:
+        # Stricter baseline (use for prod)
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; "
+            "form-action 'self'; base-uri 'self'; frame-ancestors 'self';"
+        )
     return resp
 
 @app.before_request
@@ -54,6 +78,7 @@ def init_db():
                 password TEXT NOT NULL
             )
         """)
+        # default admin
         default_user = "admin"
         default_pass = "admin123"
         cur.execute("SELECT username FROM users WHERE username=?", (default_user,))
@@ -132,36 +157,32 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        # Robust trim of all fields
+        # robust trim of all fields
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "")
         confirm  = (request.form.get("confirm")  or "")
 
-        # 1) Required fields first
+        # 1) required
         if not username or not password or not confirm:
             flash("Please fill out all fields.", "error")
-            return render_template("register.html",
-                                   username=username), 400
+            return render_template("register.html", username=username), 400
 
-        # 2) Buffer/overflow limit
+        # 2) length / buffer protection
         if _too_long(username) or _too_long(password) or _too_long(confirm):
             flash(f"Username or password exceeds {MAX_CRED_LENGTH} characters.", "error")
-            return render_template("register.html",
-                                   username=username), 400
+            return render_template("register.html", username=username), 400
 
-        # 3) Passwords must match
+        # 3) passwords must match
         if password != confirm:
             flash("Passwords do not match.", "error")
-            return render_template("register.html",
-                                   username=username), 400
+            return render_template("register.html", username=username), 400
 
-        # 4) Username must be unique
+        # 4) unique username
         if get_user(username):
             flash("Username already exists.", "error")
-            return render_template("register.html",
-                                   username=username), 400
+            return render_template("register.html", username=username), 400
 
-        # 5) Create user
+        # 5) create user
         pw_hash = generate_password_hash(password)
         if add_user(username, pw_hash):
             session["user"] = username
@@ -169,8 +190,7 @@ def register():
             return redirect(url_for("search_page"))
         else:
             flash("Database error — try again later.", "error")
-            return render_template("register.html",
-                                   username=username), 500
+            return render_template("register.html", username=username), 500
 
     return render_template("register.html")
 
@@ -282,4 +302,5 @@ def _template_missing(e):
 # ── Run ─────────────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
+    # RELAXED_CSP defaults to ON for dev; set RELAXED_CSP=0 to test stricter CSP.
     app.run(host="0.0.0.0", port=5001, debug=True)
