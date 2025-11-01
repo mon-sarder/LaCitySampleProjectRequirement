@@ -54,7 +54,6 @@ def init_db():
                 password TEXT NOT NULL
             )
         """)
-        # Default admin
         default_user = "admin"
         default_pass = "admin123"
         cur.execute("SELECT username FROM users WHERE username=?", (default_user,))
@@ -133,27 +132,46 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
+        # Robust trim of all fields
         username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        confirm = request.form.get("confirm") or ""
+        password = (request.form.get("password") or "")
+        confirm  = (request.form.get("confirm")  or "")
 
-        if _too_long(username) or _too_long(password):
-            flash("Username or password too long.", "error")
-            return render_template("register.html"), 400
-        if not username or not password:
+        # 1) Required fields first
+        if not username or not password or not confirm:
             flash("Please fill out all fields.", "error")
-        elif get_user(username):
-            flash("Username already exists.", "error")
-        elif password != confirm:
+            return render_template("register.html",
+                                   username=username), 400
+
+        # 2) Buffer/overflow limit
+        if _too_long(username) or _too_long(password) or _too_long(confirm):
+            flash(f"Username or password exceeds {MAX_CRED_LENGTH} characters.", "error")
+            return render_template("register.html",
+                                   username=username), 400
+
+        # 3) Passwords must match
+        if password != confirm:
             flash("Passwords do not match.", "error")
+            return render_template("register.html",
+                                   username=username), 400
+
+        # 4) Username must be unique
+        if get_user(username):
+            flash("Username already exists.", "error")
+            return render_template("register.html",
+                                   username=username), 400
+
+        # 5) Create user
+        pw_hash = generate_password_hash(password)
+        if add_user(username, pw_hash):
+            session["user"] = username
+            flash("Account created successfully!", "success")
+            return redirect(url_for("search_page"))
         else:
-            pw_hash = generate_password_hash(password)
-            if add_user(username, pw_hash):
-                session["user"] = username
-                flash("Account created successfully!", "success")
-                return redirect(url_for("search_page"))
-            else:
-                flash("Database error — try again later.", "error")
+            flash("Database error — try again later.", "error")
+            return render_template("register.html",
+                                   username=username), 500
+
     return render_template("register.html")
 
 @app.route("/logout")

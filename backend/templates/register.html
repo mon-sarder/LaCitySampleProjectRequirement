@@ -1,49 +1,159 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Login</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body { font-family: system-ui, Arial; margin: 2rem; }
-    form { max-width: 360px; margin: 2rem auto; display: grid; gap: .75rem; }
-    input[type="text"], input[type="password"] { padding: .6rem; font-size: 1rem; }
-    button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
-    .flash { max-width: 360px; margin: 1rem auto; }
-    .error { color: #b00020; }
-    .success { color: #0a7d00; }
-    .info { color: #004e9a; }
-    .card { border: 1px solid #ddd; padding: 1.2rem; border-radius: .5rem; }
-    p.center { text-align: center; margin-top: 1rem; }
-  </style>
-</head>
-<body>
-  <h1>Sign In</h1>
+/* Base reset */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-  <div class="flash">
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for cat, msg in messages %}
-          <div class="{{ cat }}">{{ msg }}</div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
-  </div>
+html, body {
+  height: 100%;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  color: #0f172a;
+}
 
-  <form class="card" method="post" autocomplete="off">
-    <label>Username
-      <input type="text" name="username" required inputmode="text" autocomplete="off" />
-    </label>
+/* Center authentication pages */
+.auth {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
 
-    <label>Password
-      <input type="password" name="password" required autocomplete="current-password" />
-    </label>
+/* Differentiate background per page */
+.auth-login {
+  background: linear-gradient(145deg, #f0f4ff 0%, #e8edff 50%, #f7f9ff 100%);
+}
 
-    <button type="submit">Log in</button>
-  </form>
+.auth-register {
+  background: radial-gradient(circle at top left, #fff2f0, #ffe7e1 40%, #fff 80%);
+}
 
-  <p class="center">
-    Don’t have an account? <a href="{{ url_for('register') }}">Create one</a>
-  </p>
-</body>
-</html>
+/* Card container */
+.auth-card {
+  width: min(480px, 90vw);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+  padding: 32px 28px;
+}
+
+.auth-card h1 {
+  margin-bottom: 8px;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.subtle {
+  color: #64748b;
+  margin-bottom: 14px;
+}
+
+/* Flash message styling */
+.flash {
+  list-style: none;
+  margin-bottom: 12px;
+}
+.flash li {
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.flash .success { background: #ecfdf5; color: #065f46; }
+.flash .error { background: #fef2f2; color: #991b1b; }
+.flash .info { background: #eff6ff; color: #1e3a8a; }
+
+/* Form layout */
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  font-weight: 600;
+  color: #1e293b;
+  margin-top: 4px;
+}
+
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+/* Buttons */
+.btn {
+  padding: 10px 16px;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn.primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.btn.primary:hover {
+  background: #1d4ed8;
+}
+
+.btn.accent {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.btn.accent:hover {
+  background: #dc2626;
+}
+
+/* Utility classes */
+.muted {
+  color: #64748b;
+}
+
+.mt8 {
+  margin-top: 8px;
+}
+
+.mt12 {
+  margin-top: 12px;
+}
+
+/* Form row layout (used in register.html) */
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.col {
+  display: grid;
+  gap: 6px;
+}
+
+/* Password hint feedback */
+.hint {
+  font-size: 13px;
+}
+
+.hint.ok {
+  color: #15803d;
+}
+
+.hint.err {
+  color: #b91c1c;
+}
