@@ -25,8 +25,8 @@ try:
 except Exception:
     CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
 
-DEFAULT_TIMEOUT_MS = 3000
-DEFAULT_NAV_TIMEOUT_MS = 5000
+DEFAULT_TIMEOUT_MS = 5000
+DEFAULT_NAV_TIMEOUT_MS = 7000
 HEADLESS_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
