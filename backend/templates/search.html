@@ -1,83 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Search Products</title>
-  <style>
-    body { font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
-    h1 { margin: 0 0 12px; }
-    .top { margin-bottom: 12px; }
-    .muted { color: #666; }
-    .error { color: #b00020; font-weight: 600; margin-top: 8px; }
-    .msg { margin-top: 8px; }
-    .row { display: inline-flex; gap: 8px; align-items: center; margin: 8px 0; }
-    input[type="text"] { padding: 6px 8px; font-size: 16px; width: 260px; }
-    button, .chip-btn {
-      padding: 6px 10px; font-size: 15px; cursor: pointer; border-radius: 8px;
-      border: 1px solid #ccc; background: #f2f4f7;
-    }
-    .chip-btn { margin: 6px 6px 0 0; }
-    .chip-btn:hover { background: #e7ebf0; }
-    .items { margin-top: 12px; border-top: 1px solid #ddd; padding-top: 10px; }
-    .item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 6px 0; border-bottom: 1px dashed #eee; }
-    .price { font-weight: 600; }
-    .actions { margin: 10px 0; }
-  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
-<body>
-  <h1>Search Products</h1>
-
-  <div class="top">
+<body class="search-container">
+  <header style="text-align:center; margin-bottom:12px;">
     Signed in as <strong>{{ username }}</strong> |
     <a href="{{ url_for('logout') }}">Logout</a>
-  </div>
+  </header>
 
-  <!-- Search form -->
-  <form method="POST" class="row">
-    <input type="text" name="query" placeholder="Type a category (e.g., Travel, Music)" value="{{ query or '' }}">
+  <h1>Search Products</h1>
+
+  <form method="POST" style="justify-content:center; display:flex; gap:10px;">
+    <input type="text" name="query" value="{{ query or '' }}"
+           placeholder="Type a category (e.g., Travel)" autocomplete="off" inputmode="search" />
     <button type="submit">Search</button>
-  </form>
-
-  <!-- Single button to list ALL categories -->
-  <form method="POST" class="actions">
-    <input type="hidden" name="list_all" value="1">
-    <button type="submit">Show available categories</button>
+    <button type="submit" name="list_all" value="1">Show available categories</button>
+    <a class="btn" href="{{ url_for('categories_page') }}">Open categories page</a>
   </form>
 
   {% if error %}
-    <div class="error">{{ error }}</div>
+    <p class="flash error" style="margin-top:10px;">{{ error }}</p>
   {% endif %}
-
   {% if message %}
-    <div class="msg">{{ message }}</div>
+    <p class="flash info" style="margin-top:10px;">{{ message }}</p>
   {% endif %}
 
-  {# Category choices (rendered after Search when no close match OR after clicking the button) #}
   {% if choices %}
-    <div class="muted">Categories:</div>
-    <div>
+    <div class="category-list" style="margin-top:10px;">
       {% for c in choices %}
-        <form method="POST" style="display:inline;">
-          <input type="hidden" name="query" value="{{ c }}">
-          <button class="chip-btn" type="submit">{{ c }}</button>
-        </form>
+        <a class="category-chip" href="{{ url_for('search_page') }}?query={{ c }}">{{ c }}</a>
       {% endfor %}
     </div>
   {% endif %}
 
-  {# Items list when a category has been picked #}
+  {% if picked %}
+    <h3 style="text-align:center; margin-top:16px;">Category: {{ picked }}</h3>
+  {% endif %}
+  {% if meta %}
+    <p style="text-align:center; color:#64748b;">{{ meta }}</p>
+  {% endif %}
+
   {% if items %}
-    <div class="items">
-      <div class="muted">Category: <strong>{{ picked }}</strong>{% if meta %} — <span class="muted">{{ meta }}</span>{% endif %}</div>
-      {% for it in items %}
-        <div class="item">
-          <div>{{ it.title }}</div>
-          <div class="price">{{ it.price }}</div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin-top:16px;">
+      {% for item in items %}
+        <div class="auth-card">
+          <div style="font-weight:600; margin-bottom:6px;">{{ item.title }}</div>
+          <div style="color:#2563eb;">{{ item.price }}</div>
         </div>
       {% endfor %}
-      {% if not items %}
-        <div class="muted">No items found on the first page.</div>
-      {% endif %}
     </div>
   {% endif %}
 </body>

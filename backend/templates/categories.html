@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Categories</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="search-container">
+  <header style="text-align:center; margin-bottom:12px;">
+    <a href="{{ url_for('search_page') }}">← Back to search</a>
+  </header>
+  <h1>Available categories</h1>
+
+  <div class="category-list" style="margin-top:10px;">
+    {% for c in categories %}
+      <a class="category-chip" href="{{ url_for('search_page') }}?query={{ c }}">{{ c }}</a>
+    {% endfor %}
+  </div>
+</body>
+</html>

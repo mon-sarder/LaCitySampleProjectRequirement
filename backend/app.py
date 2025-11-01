@@ -12,7 +12,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import BadRequest
 from jinja2 import TemplateNotFound
 
-from robot_driver import search_product
+from robot_driver import search_product, list_categories
 from login_driver import run_login_test
 
 # ── App setup ────────────────────────────────────────────────
@@ -45,17 +45,18 @@ def set_secure_headers(resp):
     resp.headers["Referrer-Policy"] = "no-referrer"
 
     if DEV_RELAXED_CSP:
-        # Relaxed for local development & MCP/Playwright testing
+        # Generous policy for local dev / MCP testing
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "img-src 'self' data:; "
-            "script-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
             "style-src  'self' 'unsafe-inline'; "
-            "connect-src 'self' http://localhost:5001 http://127.0.0.1:5001; "
+            "font-src 'self' data:; "
+            "connect-src 'self' http://localhost:5001 http://127.0.0.1:5001 ws: wss: http://localhost:* http://127.0.0.1:*; "
             "form-action 'self'; base-uri 'self'; frame-ancestors 'self';"
         )
     else:
-        # Stricter baseline (use for prod)
+        # Stricter baseline for production
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; "
             "form-action 'self'; base-uri 'self'; frame-ancestors 'self';"
@@ -157,32 +158,26 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        # robust trim of all fields
         username = (request.form.get("username") or "").strip()
         password = (request.form.get("password") or "")
         confirm  = (request.form.get("confirm")  or "")
 
-        # 1) required
         if not username or not password or not confirm:
             flash("Please fill out all fields.", "error")
             return render_template("register.html", username=username), 400
 
-        # 2) length / buffer protection
         if _too_long(username) or _too_long(password) or _too_long(confirm):
             flash(f"Username or password exceeds {MAX_CRED_LENGTH} characters.", "error")
             return render_template("register.html", username=username), 400
 
-        # 3) passwords must match
         if password != confirm:
             flash("Passwords do not match.", "error")
             return render_template("register.html", username=username), 400
 
-        # 4) unique username
         if get_user(username):
             flash("Username already exists.", "error")
             return render_template("register.html", username=username), 400
 
-        # 5) create user
         pw_hash = generate_password_hash(password)
         if add_user(username, pw_hash):
             session["user"] = username
@@ -206,7 +201,7 @@ def logout():
 def search_page():
     context = {
         "username": session.get("user"),
-        "query": "",
+        "query": request.args.get("query", ""),  # also accept ?query= from /categories links
         "error": None,
         "message": None,
         "choices": None,
@@ -215,11 +210,27 @@ def search_page():
         "meta": None,
     }
 
+    # If query provided via URL param (clicked from /categories)
+    if request.method == "GET" and context["query"]:
+        try:
+            data = search_product(context["query"], agent=AGENT_ID)
+            status = data.get("status")
+            if status == "choices":
+                context["message"] = data.get("message")
+                context["choices"] = data.get("categories") or []
+            elif status == "success":
+                context["picked"] = data.get("category")
+                context["items"] = data.get("items") or []
+                context["meta"] = data.get("meta")
+        except Exception as e:
+            context["error"] = f"Search failed: {e}"
+        return render_template("search.html", **context)
+
     if request.method == "POST":
         # Show available categories button
         if request.form.get("list_all") == "1":
             try:
-                data = search_product("", agent=AGENT_ID)
+                data = list_categories(agent=AGENT_ID)
                 context["message"] = data.get("message") or "Available categories:"
                 context["choices"] = data.get("categories") or []
             except Exception as e:
@@ -247,6 +258,29 @@ def search_page():
                 context["error"] = f"Search failed: {e}"
 
     return render_template("search.html", **context)
+
+# ── Categories pages (HTML + JSON) ──────────────────────────
+@app.route("/categories")
+@login_required
+def categories_page():
+    try:
+        data = list_categories(agent=AGENT_ID)
+        cats = data.get("categories", [])
+    except Exception as e:
+        cats = []
+        flash(f"Failed to load categories: {e}", "error")
+
+    # Keep this minimal so Claude/Playwright can navigate easily
+    return render_template("categories.html", categories=cats)
+
+@app.route("/categories.json")
+@login_required
+def categories_json():
+    try:
+        data = list_categories(agent=AGENT_ID)
+        return jsonify({"status": "choices", "categories": data.get("categories", [])})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ── JSON APIs ────────────────────────────────────────────────
 @app.route("/search-json", methods=["POST"])
