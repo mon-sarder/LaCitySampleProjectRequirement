@@ -1,57 +1,223 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Search Products</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Search • Robot Driver</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="search-container">
-  <header style="text-align:center; margin-bottom:12px;">
-    Signed in as <strong>{{ username }}</strong> |
-    <a href="{{ url_for('logout') }}">Logout</a>
+<body>
+  <header>
+    <div class="container inline" style="justify-content:space-between; flex-wrap:wrap;">
+      <h1 style="margin:0">Search</h1>
+      <div class="inline" style="gap:12px">
+        <span class="muted">Signed in as <strong>{{ username }}</strong></span>
+        <a class="button ghost" href="{{ url_for('logout') }}">Logout</a>
+        <a class="button" href="{{ url_for('demo_index') }}">Open Demo Console</a>
+      </div>
+    </div>
   </header>
 
-  <h1>Search Products</h1>
+  <main class="container">
+    <div class="row">
+      <!-- Classic server-side search -->
+      <section class="card stack" aria-labelledby="classicH">
+        <h2 id="classicH">Classic search (server-side)</h2>
 
-  <form method="POST" style="justify-content:center; display:flex; gap:10px;">
-    <input type="text" name="query" value="{{ query or '' }}"
-           placeholder="Type a category (e.g., Travel)" autocomplete="off" inputmode="search" />
-    <button type="submit">Search</button>
-    <button type="submit" name="list_all" value="1">Show available categories</button>
-    <a class="btn" href="{{ url_for('categories_page') }}">Open categories page</a>
-  </form>
+        {# Flash messages #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="stack" role="status" aria-live="polite">
+              {% for category, message in messages %}
+                <div class="badge {% if category == 'success' %}success{% elif category == 'error' %}error{% elif category == 'warn' %}warn{% endif %}">
+                  {{ message }}
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
 
-  {% if error %}
-    <p class="flash error" style="margin-top:10px;">{{ error }}</p>
-  {% endif %}
-  {% if message %}
-    <p class="flash info" style="margin-top:10px;">{{ message }}</p>
-  {% endif %}
+        {% if error %}
+          <div class="badge error">{{ error }}</div>
+        {% endif %}
 
-  {% if choices %}
-    <div class="category-list" style="margin-top:10px;">
-      {% for c in choices %}
-        <a class="category-chip" href="{{ url_for('search_page') }}?query={{ c }}">{{ c }}</a>
-      {% endfor %}
-    </div>
-  {% endif %}
+        <form class="search-form" method="post" action="{{ url_for('search_page') }}" autocomplete="off">
+          <label for="query">Category or keyword</label>
+          <input
+            id="query"
+            name="query"
+            type="text"
+            maxlength="80"
+            placeholder="e.g., Travel, Mystery, Music"
+            value="{{ (query or '') }}"
+          />
+          <div class="inline" style="gap:8px">
+            <button type="submit" class="primary">Search</button>
+            <span class="muted">POST /search</span>
+          </div>
+        </form>
 
-  {% if picked %}
-    <h3 style="text-align:center; margin-top:16px;">Category: {{ picked }}</h3>
-  {% endif %}
-  {% if meta %}
-    <p style="text-align:center; color:#64748b;">{{ meta }}</p>
-  {% endif %}
+        {% if result %}
+          <div class="ok">Result</div>
+          <pre class="mono">{{ result }}</pre>
+        {% endif %}
+      </section>
 
-  {% if items %}
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin-top:16px;">
-      {% for item in items %}
-        <div class="auth-card">
-          <div style="font-weight:600; margin-bottom:6px;">{{ item.title }}</div>
-          <div style="color:#2563eb;">{{ item.price }}</div>
+      <!-- API search + categories (AJAX) -->
+      <section class="card stack" aria-labelledby="apiH">
+        <h2 id="apiH">API tools (AJAX)</h2>
+
+        <div class="stack">
+          <div class="inline" style="gap:8px">
+            <button id="btnApiSearch" class="primary">Search via API</button>
+            <small class="muted">POST /search-json</small>
+          </div>
+          <div id="apiStatus" class="search-status"></div>
+          <pre id="apiOut" class="mono hidden"></pre>
         </div>
-      {% endfor %}
+
+        <hr style="border:none;border-top:1px solid var(--border);">
+
+        <div class="stack">
+          <div class="inline" style="gap:8px">
+            <button id="btnShowCats" class="primary" name="list_all">Show categories</button>
+            <button id="btnRefreshCats" class="ghost">Refresh</button>
+            <small id="catsStatus" class="muted"></small>
+          </div>
+          <div id="catsWrap" class="stack hidden">
+            <div id="catChips" class="chips"></div>
+            <pre id="catsJson" class="mono hidden"></pre>
+          </div>
+        </div>
+      </section>
     </div>
-  {% endif %}
+  </main>
+
+  <script>
+    // Helpers
+    const $ = (s) => document.querySelector(s);
+    const show = (el, on = true) => el.classList.toggle('hidden', !on);
+    const setText = (el, t) => { el.textContent = t; };
+
+    // Use session (since you're logged in) or optional API key if set in localStorage (shared with demo)
+    function getApiKey() { return localStorage.getItem('robot_api_key') || ''; }
+
+    async function apiFetch(path, opts = {}) {
+      const controller = new AbortController();
+      const timeoutMs = opts.timeoutMs ?? 12000;
+      const t = setTimeout(() => controller.abort('timeout'), timeoutMs);
+
+      try {
+        const headers = Object.assign({
+          'Accept': 'application/json',
+        }, opts.headers || {});
+
+        // If user has stored an API key, include it; otherwise session cookie works
+        const k = getApiKey();
+        if (k) headers['X-API-Key'] = k;
+
+        const res = await fetch(path, {
+          method: opts.method || 'GET',
+          headers,
+          body: opts.body || undefined,
+          signal: controller.signal,
+        });
+        const ct = res.headers.get('content-type') || '';
+        let data = null;
+        if (ct.includes('application/json')) {
+          data = await res.json();
+        } else {
+          data = { status: 'error', message: 'Non-JSON response', text: await res.text() };
+        }
+        return { ok: res.ok, status: res.status, data };
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    // API Search (AJAX to /search-json)
+    $('#btnApiSearch').addEventListener('click', async () => {
+      const q = ($('#query').value || '').trim();
+      if (!q) {
+        setText($('#apiStatus'), 'Type something to search.');
+        show($('#apiOut'), false);
+        return;
+      }
+      setText($('#apiStatus'), 'Searching…');
+      show($('#apiOut'), false);
+      const r = await apiFetch('{{ url_for("search_json") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product: q })
+      });
+      if (r.ok) {
+        setText($('#apiStatus'), 'Success');
+        $('#apiOut').textContent = JSON.stringify(r.data, null, 2);
+        show($('#apiOut'), true);
+      } else {
+        setText($('#apiStatus'), `Error (${r.status})`);
+        $('#apiOut').textContent = JSON.stringify(r.data, null, 2);
+        show($('#apiOut'), true);
+      }
+    });
+
+    // Categories (AJAX to /categories.json)
+    $('#btnShowCats').addEventListener('click', () => loadCategories({ force: false }));
+    $('#btnRefreshCats').addEventListener('click', () => loadCategories({ force: true }));
+
+    async function loadCategories({ force = false } = {}) {
+      setText($('#catsStatus'), 'Loading…');
+      show($('#catsWrap'), true);
+      $('#catChips').innerHTML = '';
+      show($('#catsJson'), false);
+
+      // session cache
+      if (!force) {
+        const cached = sessionStorage.getItem('robot_cats');
+        if (cached) {
+          const data = JSON.parse(cached);
+          drawCategories(data.categories || []);
+          setText($('#catsStatus'), `Loaded from cache (${data.count || (data.categories||[]).length})`);
+          return;
+        }
+      }
+
+      const r = await apiFetch('{{ url_for("categories_json") }}');
+      if (r.ok && r.data && r.data.categories) {
+        const cats = r.data.categories;
+        drawCategories(cats);
+        sessionStorage.setItem('robot_cats', JSON.stringify({ categories: cats, count: cats.length }));
+        setText($('#catsStatus'), `Loaded ${cats.length}`);
+        $('#catsJson').textContent = JSON.stringify(r.data, null, 2);
+        show($('#catsJson'), true);
+      } else {
+        setText($('#catsStatus'), `Error (${r.status})`);
+        $('#catsJson').textContent = JSON.stringify(r.data, null, 2);
+        show($('#catsJson'), true);
+      }
+    }
+
+    function drawCategories(cats) {
+      const wrap = $('#catChips');
+      wrap.innerHTML = '';
+      if (!Array.isArray(cats) || cats.length === 0) {
+        wrap.innerHTML = '<span class="muted">No categories found.</span>';
+        return;
+      }
+      cats.forEach(name => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.setAttribute('aria-label', `Category ${name}`);
+        chip.addEventListener('click', () => {
+          // Fill input and run classic POST (more consistent with assignment)
+          $('#query').value = name;
+          document.querySelector('form.search-form').submit();
+        });
+        wrap.appendChild(chip);
+      });
+    }
+  </script>
 </body>
 </html>
