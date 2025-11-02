@@ -1,420 +1,166 @@
-# app.py
-import os
-import sqlite3
-import traceback
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 import json
-import uuid
+import difflib
 import time
-from datetime import timedelta
-from functools import wraps
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import os
 
-from flask import (
-    Flask, render_template, request, redirect, url_for,
-    session, flash, jsonify, g
-)
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.exceptions import BadRequest
-from jinja2 import TemplateNotFound
+app = Flask(__name__)
+app.secret_key = 'supersecretkey'
 
-# Your Playwright robot modules
-import robot_driver as rd           # so we can try multiple fns for categories
-from robot_driver import search_product
+# --- Simple mock database ---------------------------------------------------
+users = {'admin': 'password123'}
+CATEGORIES = [
+    "Travel", "Mystery", "Historical Fiction", "Sequential Art", "Classics",
+    "Philosophy", "Romance", "Womens Fiction", "Fiction", "Childrens",
+    "Religion", "Nonfiction", "Music", "Science", "Sports",
+    "Business", "Self Help", "Fantasy", "Science Fiction", "Poetry",
+    "Humor", "Psychology", "Cooking", "Art", "Drama",
+    "Comics", "Politics", "Technology", "Health", "History",
+    "Education", "Nature", "Biography", "Adventure", "Photography",
+    "Crafts", "Economics", "Parenting", "Philanthropy", "Horror",
+    "Law", "Sociology", "Mathematics", "Anthropology", "Linguistics",
+    "Environment", "Astronomy", "Animals", "Gardening", "Design"
+]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# App setup
-# ──────────────────────────────────────────────────────────────────────────────
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-app = Flask(
-    __name__,
-    template_folder=os.path.join(BASE_DIR, "templates"),
-    static_folder=os.path.join(BASE_DIR, "static"),
-)
+# --- Utility: search function -----------------------------------------------
+def search_products(category_query):
+    results = []
+    for c in CATEGORIES:
+        if category_query.lower() in c.lower():
+            results.append({
+                "category": c,
+                "items": [
+                    {"name": f"{c} Item 1", "price": "$10"},
+                    {"name": f"{c} Item 2", "price": "$15"},
+                    {"name": f"{c} Item 3", "price": "$20"}
+                ]
+            })
+    return results
 
-app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
-app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB
-app.permanent_session_lifetime = timedelta(minutes=30)
 
-DB_PATH = os.path.join(BASE_DIR, "users.db")
-MAX_CRED_LENGTH = 50
-API_KEY = os.environ.get("API_KEY", "secret123")
-RUN_TIMEOUT_SEC = int(os.environ.get("RUN_TIMEOUT_SEC", "45"))
-MAX_GOAL_LEN = int(os.environ.get("MAX_GOAL_LEN", "200"))
-
-# Optional: small CSP helper (relax if env set)
-RELAXED_CSP = os.environ.get("RELAXED_CSP", "").lower() in ("1", "true", "yes")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Observability: request IDs, timing, and counters
-# ──────────────────────────────────────────────────────────────────────────────
-METRICS = {
-    "requests_total": 0,
-    "requests_api": 0,
-    "errors_total": 0,
-    "runs_total": 0,
-    "runs_ok": 0,
-    "runs_err": 0,
-    "categories_total": 0,
-    "search_total": 0,
-}
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-@app.before_request
-def _before_request():
-    g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    g.started_ms = _now_ms()
-    METRICS["requests_total"] += 1
-    if request.path.startswith("/api/") or request.path.endswith(".json"):
-        METRICS["requests_api"] += 1
-
-@app.after_request
-def set_secure_headers(resp):
-    # Attach request id & timing
-    duration_ms = _now_ms() - getattr(g, "started_ms", _now_ms())
-    resp.headers["X-Request-ID"] = getattr(g, "request_id", "-")
-    resp.headers["X-Response-Time-ms"] = str(duration_ms)
-
-    # Security headers
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["Referrer-Policy"] = "no-referrer"
-    if RELAXED_CSP:
-        resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; "
-            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-        )
-    else:
-        resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
-    return resp
-
-def _log(event: str, **kw):
-    # small structured log to stdout
-    payload = {
-        "event": event,
-        "request_id": getattr(g, "request_id", "-"),
-        "path": request.path if request else "-",
-        "method": request.method if request else "-",
-        "ts_ms": _now_ms(),
-    }
-    payload.update(kw or {})
-    print(json.dumps(payload, ensure_ascii=False))
-
-# ──────────────────────────────────────────────────────────────────────────────
-# DB utilities
-# ──────────────────────────────────────────────────────────────────────────────
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
-            )
-        """)
-        conn.commit()
-
-def _safe_query(fn):
-    try:
-        return fn()
-    except Exception as e:
-        METRICS["errors_total"] += 1
-        _log("db_error", error=str(e))
-        traceback.print_exc()
-        return None
-
-def get_user(username: str):
-    def _q():
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
-            return cur.fetchone()
-    return _safe_query(_q)
-
-def add_user(username: str, password_hash: str):
-    def _q():
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
-            conn.commit()
-            return True
-    return _safe_query(_q)
-
-init_db()
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
-def _too_long(x: str) -> bool:
-    return x is None or len(x) > MAX_CRED_LENGTH
-
-def _get_categories_safe():
-    """
-    Try several possible functions in robot_driver to get categories.
-    Normalize to a list[str] so jsonify always succeeds.
-    """
-    for fn_name in ("get_categories", "list_categories", "fetch_categories"):
-        if hasattr(rd, fn_name):
-            try:
-                cats = getattr(rd, fn_name)()
-                if isinstance(cats, dict) and "categories" in cats:
-                    cats = cats["categories"]
-                if isinstance(cats, (set, tuple)):
-                    cats = list(cats)
-                if not isinstance(cats, list):
-                    cats = list(cats)
-                cats = [str(c).strip() for c in cats if str(c).strip()]
-                METRICS["categories_total"] += 1
-                return cats
-            except Exception as e:
-                _log("categories_error", fn=fn_name, error=str(e))
-                traceback.print_exc()
-    return []
-
-def api_or_login_required(view):
-    """
-    If X-API-Key matches, allow without session.
-    If logged in, allow.
-    Otherwise:
-      - for API paths return 401 JSON (no HTML redirect)
-      - for pages redirect to login
-    """
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        api_key = request.headers.get("X-API-Key")
-        if api_key and api_key == API_KEY:
-            return view(*args, **kwargs)
-        if "user" in session:
-            return view(*args, **kwargs)
-        if request.path.endswith(".json") or request.path.startswith("/api/"):
-            return jsonify({"status": "error", "message": "Unauthorized"}), 401
-        return redirect(url_for("login", next=request.full_path))
-    return wrapper
-
-def login_required(view):
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        if "user" not in session:
-            return redirect(url_for("login", next=request.path))
-        return view(*args, **kwargs)
-    return wrapper
-
-# Thread-pool for time-bounded /api/run
-EXECUTOR = ThreadPoolExecutor(max_workers=2)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Routes: UI navigation
-# ──────────────────────────────────────────────────────────────────────────────
-@app.route("/")
+# --- Routes: login/logout ---------------------------------------------------
+@app.route('/')
 def home():
-    if "user" in session:
-        return redirect(url_for("search_page"))
-    return redirect(url_for("login"))
+    if 'username' in session:
+        return redirect(url_for('search_page'))
+    return redirect(url_for('login'))
 
-@app.route("/login", methods=["GET", "POST"])
+
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        if _too_long(username) or _too_long(password):
-            flash(f"Credentials exceed {MAX_CRED_LENGTH} characters.", "error")
-            return render_template("login.html"), 400
-        user = get_user(username)
-        if user and check_password_hash(user[1], password):
-            session["user"] = username
-            flash("Logged in successfully!", "success")
-            return redirect(url_for("search_page"))
-        flash("Invalid username or password.", "error")
-    return render_template("login.html")
-
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        confirm  = request.form.get("confirm") or ""
-        if _too_long(username) or _too_long(password):
-            flash(f"Credentials exceed {MAX_CRED_LENGTH} characters.", "error")
-            return render_template("register.html"), 400
-        if not username or not password:
-            flash("Please fill out all fields.", "error")
-        elif get_user(username):
-            flash("Username already exists. Try logging in.", "error")
-        elif password != confirm:
-            flash("Passwords do not match.", "error")
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if username in users and users[username] == password:
+            session['username'] = username
+            return redirect(url_for('search_page'))
         else:
-            pw_hash = generate_password_hash(password)
-            if not add_user(username, pw_hash):
-                flash("Database error — please try again later.", "error")
-                return render_template("register.html"), 500
-            session["user"] = username
-            flash("Account created successfully!", "success")
-            return redirect(url_for("search_page"))
-    return render_template("register.html")
+            return render_template('login.html', error='Invalid credentials')
+    return render_template('login.html')
 
-@app.route("/logout")
+
+@app.route('/logout')
 def logout():
-    session.pop("user", None)
-    flash("Logged out successfully.", "info")
-    return redirect(url_for("login"))
+    session.pop('username', None)
+    return redirect(url_for('login'))
 
-@app.route("/search", methods=["GET", "POST"])
-@login_required
+
+# --- Main Search Page -------------------------------------------------------
+@app.route('/search', methods=['GET', 'POST'])
 def search_page():
-    result = None
-    error = None
-    query = ""
-    if request.method == "POST":
-        query = (request.form.get("query") or "").strip()
-        if not query:
-            error = "Please type a product to search."
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    results = []
+    message = None
+
+    if request.method == 'POST':
+        category_query = request.form.get('category', '')
+        matches = difflib.get_close_matches(category_query, CATEGORIES, n=1, cutoff=0.7)
+
+        if matches:
+            results = search_products(matches[0])
         else:
-            try:
-                METRICS["search_total"] += 1
-                data = search_product(query)
-                if data.get("status") == "success":
-                    result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
-                else:
-                    error = data.get("message", "Search failed.")
-            except Exception as e:
-                METRICS["errors_total"] += 1
-                error = f"Search failed: {e}"
-                _log("search_error", error=str(e))
-    return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
+            message = "No close category match. Pick one of the available categories."
 
-# Optional SPA demo (AJAX)
-@app.route("/demo")
-def demo_index():
-    return render_template("index.html")
+    return render_template(
+        'index.html',
+        username=session['username'],
+        categories=CATEGORIES,
+        results=results,
+        message=message
+    )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# JSON APIs (used by MCP bridge & SPA)
-# ──────────────────────────────────────────────────────────────────────────────
-@app.get("/api/health")
-def api_health():
-    return jsonify({"status": "ok"})
 
-@app.get("/api/metrics")
-def api_metrics():
-    # Shallow copy to avoid mutation while serializing
-    return jsonify({"status": "ok", "metrics": dict(METRICS)})
-
-@app.get("/categories.json")
-@api_or_login_required
-def categories_json():
-    try:
-        cats = _get_categories_safe()
-        return jsonify({"status": "ok", "categories": cats})
-    except Exception as e:
-        METRICS["errors_total"] += 1
-        _log("categories_error", error=str(e))
-        return jsonify({
-            "status": "error",
-            "message": f"categories failed: {e}",
-            "trace": traceback.format_exc().splitlines()[-5:]
-        }), 500
-
-@app.post("/search-json")
-@api_or_login_required
+# --- MCP endpoints ----------------------------------------------------------
+@app.route('/search-json', methods=['POST'])
 def search_json():
+    data = request.get_json(force=True)
+    query = data.get('product', '')
+    headless = data.get('headless', True)
+
+    # return items for close matches, or entire category list if no match
+    results = search_products(query)
+    if not results:
+        results = [{"category": c, "items": []} for c in CATEGORIES]
+
+    return jsonify({
+        "status": "success",
+        "agent": "BroncoMCP/1.0",
+        "items": results,
+        "meta": {"query": query, "count": len(results)},
+    })
+
+
+@app.route('/api/run', methods=['POST'])
+def api_run():
     try:
         data = request.get_json(force=True)
-    except BadRequest:
-        return jsonify({"status": "error", "message": "Invalid JSON format."}), 400
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-    product_name = (data.get("product") or "").strip()
-    try:
-        METRICS["search_total"] += 1
-        result = search_product(product_name)
-        return jsonify(result)
-    except Exception as e:
-        METRICS["errors_total"] += 1
-        _log("search_error", error=str(e))
-        return jsonify({"status": "error", "message": f"Search failed: {e}"}), 500
-
-@app.post("/api/run")
-@api_or_login_required
-def api_run():
-    METRICS["runs_total"] += 1
-    try:
-        payload = request.get_json(force=True, silent=False)
-    except Exception:
-        METRICS["runs_err"] += 1
-        return jsonify({"status": "error", "message": "Invalid JSON body."}), 400
-
-    # Accept string or dict (structured) goals
-    goal = payload.get("goal")
-    planner = str(payload.get("planner", "builtin")).lower()
-
-    # Basic hardening
-    if isinstance(goal, str) and len(goal) > MAX_GOAL_LEN:
-        METRICS["runs_err"] += 1
-        return jsonify({"status": "error", "message": f"Goal too long (>{MAX_GOAL_LEN})."}), 400
-    if not goal:
-        METRICS["runs_err"] += 1
-        return jsonify({"status": "error", "message": "Missing 'goal'."}), 400
-
-    headless = not (os.environ.get("HEADFUL", "").lower() in ("1", "true", "yes"))
-    _log("run_start", planner=planner)
-
-    def _work():
-        # Import inside worker to isolate any heavy imports from the main thread
-        from mcp_agent import run_ai_goal
-        return run_ai_goal(goal=goal, planner=planner, headless=headless)
-
-    future = EXECUTOR.submit(_work)
-    try:
-        result = future.result(timeout=RUN_TIMEOUT_SEC)
-        if isinstance(result, dict) and result.get("status") == "success":
-            METRICS["runs_ok"] += 1
+        intent = data.get('intent', 'search_product')
+        query = data.get('query', '')
+        if intent == 'search_product':
+            results = search_products(query)
+            return jsonify({
+                "status": "success",
+                "agent": "BroncoMCP/1.0",
+                "results": results,
+            })
         else:
-            METRICS["runs_err"] += 1
-        return jsonify({"status": "ok", "result": result})
-    except TimeoutError:
-        METRICS["runs_err"] += 1
-        future.cancel()
-        _log("run_timeout", timeout_sec=RUN_TIMEOUT_SEC)
-        return jsonify({
-            "status": "error",
-            "message": f"/api/run timed out after {RUN_TIMEOUT_SEC}s."
-        }), 504
+            return jsonify({"status": "error", "message": "Unknown intent"}), 400
     except Exception as e:
-        METRICS["runs_err"] += 1
-        _log("run_error", error=str(e))
-        return jsonify({
-            "status": "error",
-            "message": f"/api/run failed: {e}",
-            "trace": traceback.format_exc().splitlines()[-8:]
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Friendly error pages
-# ──────────────────────────────────────────────────────────────────────────────
-@app.errorhandler(404)
-def _404(_e):
-    return render_template("index.html"), 404
 
-@app.errorhandler(500)
-def _500(_e):
-    METRICS["errors_total"] += 1
-    return render_template("index.html"), 500
+@app.route('/api/metrics', methods=['POST'])
+def api_metrics():
+    try:
+        data = request.get_json(force=True)
+        print(f"[METRIC] {json.dumps(data, indent=2)}")
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.errorhandler(TemplateNotFound)
-def _template_missing(e):
-    METRICS["errors_total"] += 1
-    print(f"❌ Missing template: {e.name}")
-    return "<h2>Template missing on server. Contact admin.</h2>", 500
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Run
-# ──────────────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    init_db()
-    # Optional: seed a default admin once
-    if not get_user("admin"):
-        add_user("admin", generate_password_hash("admin123"))
-    app.run(host="0.0.0.0", port=5001, debug=True)
+# --- FIXED: Categories JSON endpoint for MCP list_categories ----------------
+@app.route('/categories.json', methods=['GET'])
+def categories_json():
+    """
+    Returns a clean JSON list so MCP list_categories() parses correctly.
+    """
+    return jsonify({
+        "status": "success",
+        "agent": "BroncoMCP/1.0",
+        "categories": sorted(CATEGORIES)
+    })
+
+
+# --- Health check -----------------------------------------------------------
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    return jsonify({"status": "ok", "agent": "BroncoMCP/1.0", "uptime_s": time.time()})
+
+
+# --- Launch -----------------------------------------------------------------
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=False)
