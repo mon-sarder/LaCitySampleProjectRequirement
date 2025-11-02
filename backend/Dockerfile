@@ -1,38 +1,35 @@
-# Dockerfile
-FROM python:3.10-slim
+# Use the official Playwright Python image with browsers preinstalled
+# Pick the tag that matches your Playwright version in requirements.txt
+# You have playwright==1.48.0, so use v1.48.0
+FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
 
+#--- Hardening / ergonomics ---
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    # Make Playwright use local project folder (kept in layer cache)
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    # Make Chromium launch faster
-    PWEXTRA_LAUNCH_ARGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --disable-extensions" \
-    # Force headless unless overridden
-    HEADFUL=0
+    PIP_NO_CACHE_DIR=1
 
-# System deps for Chromium & fonts
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdbus-1-3 \
-    libdrm2 libgtk-3-0 libnspr4 libnss3 libxcomposite1 libxdamage1 \
-    libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libpangocairo-1.0-0 \
-    libxkbcommon0 libwayland-client0 ca-certificates fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
+# Optional CSP relaxation and API key defaults (can be overridden at runtime)
+ENV RELAXED_CSP=0 \
+    API_KEY=""
 
+# Workdir
 WORKDIR /app
-COPY requirements.txt ./
+
+# Install Python deps first (better layer caching)
+COPY requirements.txt .
+# The base image already includes Playwright and browsers.
+# We still install your app deps (Flask etc.)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright + Chromium into image
-RUN python -m playwright install chromium --with-deps
+# Copy the rest of your app
+COPY . .
 
-COPY . /app
-
-# Run as non-root
-RUN useradd -m appuser
-USER appuser
-
+# Expose Flask/Gunicorn port
 EXPOSE 5001
 
-# Gunicorn: 2 workers, threads 4 (IO-bound), reasonable timeouts
-CMD ["bash", "-lc", "gunicorn -w 2 -k gthread --threads 4 --timeout 30 --keep-alive 5 --bind 0.0.0.0:5001 app:app"]
+# Healthcheck (optional but helpful)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://localhost:5001/api/health || exit 1
+
+# Run with gunicorn (fast start, threaded)
+CMD ["gunicorn", "-w", "2", "-k", "gthread", "-b", "0.0.0.0:5001", "app:app"]
