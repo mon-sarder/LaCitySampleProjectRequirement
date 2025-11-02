@@ -1,158 +1,241 @@
 # app.py
 import os
-import time
-import json
+import sqlite3
 import traceback
-from typing import Dict, Any, List
+from datetime import timedelta
+from functools import wraps
+import time
+from typing import List, Dict, Any
 
-from flask import Flask, jsonify, request, make_response
+from flask import (
+    Flask, render_template, request, redirect, url_for,
+    session, flash, jsonify
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import BadRequest
+from jinja2 import TemplateNotFound
 
-# ---- Optional: import your Playwright robot if present ----
-# If not present, the code automatically falls back to a stub.
+# --- Optional: your Playwright driver(s) if present
 try:
-    from robot_driver import search_product as robot_search_product  # noqa: F401
-    HAS_ROBOT = True
+    from robot_driver import search_product  # returns dict JSON for product/category
 except Exception:
-    HAS_ROBOT = False
+    # Safe fallback stub so the app never 500s:
+    def search_product(query: str) -> Dict[str, Any]:
+        return {
+            "status": "error",
+            "message": "Playwright driver not available",
+            "query": query,
+        }
 
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
-API_KEY = os.environ.get("API_KEY", "secret123")
-CUSTOM_UA = os.environ.get(
-    "CUSTOM_UA",
-    "robot-driver/1.0 (Mac; MCP) Python/Flask"
+# ──────────────────────────────────────────────────────────────
+# App & Security
+# ──────────────────────────────────────────────────────────────
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
 )
 
-# Expose a stable category cache (Claude relies on this being fast + deterministic)
-DEFAULT_CATEGORIES: List[str] = [
-    "Travel", "Mystery", "Historical Fiction", "Sequential Art", "Classics",
-    "Philosophy", "Romance", "Womens Fiction", "Fiction", "Childrens",
-    "Religion", "Nonfiction", "Music", "Sports and Games", "Add a comment",
-    "Fantasy", "New Adult", "Young Adult", "Science Fiction", "Poetry",
-    "Paranormal", "Art", "Psychology", "Autobiography", "Parenting",
-    "Adult Fiction", "Humor", "Horror", "History", "Food and Drink",
-    "Christian Fiction", "Business", "Biography", "Thriller", "Contemporary",
-    "Spirituality", "Academic", "Self Help", "Historical", "Christian",
-    "Suspense", "Short Stories", "Novels", "Health", "Politics",
-    "Cultural", "Science", "Crime", "Computers", "Default"
-]
+app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB request cap
+app.permanent_session_lifetime = timedelta(minutes=30)
 
-# -----------------------------------------------------------------------------
-# App init
-# -----------------------------------------------------------------------------
-app = Flask(__name__)
-app.config["JSON_SORT_KEYS"] = False
+API_KEY = os.environ.get("API_KEY", "secret123")  # <- Claude should pass this in X-API-Key
+RELAXED_CSP = os.environ.get("RELAXED_CSP", "0") in ("1", "true", "True")
+DB_PATH = os.path.join(BASE_DIR, "users.db")
 
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-def require_api_key() -> None:
-    """Abort with 401 if the X-API-Key is missing or wrong."""
-    key = request.headers.get("X-API-Key")
-    if key != API_KEY:
-        resp = jsonify({"status": "error", "message": "Unauthorized"})
-        return make_response(resp, 401)
-
-def ok(data: Dict[str, Any], code: int = 200):
-    resp = jsonify(data)
-    return make_response(resp, code)
-
-def err(message: str, code: int = 400, extra: Dict[str, Any] | None = None):
-    payload = {"status": "error", "message": message}
-    if extra:
-        payload.update(extra)
-    return make_response(jsonify(payload), code)
-
-def list_categories() -> List[str]:
-    # In a real build this might fetch and cache from the BooksToScrape site.
-    return DEFAULT_CATEGORIES
-
-def safe_robot_search(category: str) -> Dict[str, Any]:
-    """Wrapper that calls your Playwright robot if available; otherwise a stub."""
-    try:
-        if HAS_ROBOT:
-            from robot_driver import search_product  # import inside to avoid cold-start cost
-            result = search_product(category or "")
-            # Normalize minimal contract
-            return {
-                "status": result.get("status", "success"),
-                "title": result.get("title"),
-                "price": result.get("price"),
-                "category": category,
-                "meta": result.get("meta", {}),
-            }
-        # Stub result for local dev
-        return {
-            "status": "success",
-            "title": f"Sample item in {category or 'All'}",
-            "price": "£42.00",
-            "category": category or "All",
-            "meta": {"note": "stubbed result (robot unavailable)"},
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# -----------------------------------------------------------------------------
-# Middlewares (simple, header-based auth for API)
-# -----------------------------------------------------------------------------
-@app.before_request
-def _auth_gate():
-    # Only protect API/JSON routes; allow the UI or static if you serve one.
-    api_like = request.path.startswith("/api/") or request.path.endswith(".json")
-    if api_like:
-        unauthorized = require_api_key()
-        if unauthorized is not None:
-            return unauthorized  # 401
-
-# -----------------------------------------------------------------------------
-# Health + Metrics
-# -----------------------------------------------------------------------------
-START_TS = time.time()
-REQ_COUNTER = {"api": 0, "ui": 0}
-
-def _count(path: str):
-    if path.startswith("/api/") or path.endswith(".json"):
-        REQ_COUNTER["api"] += 1
-    else:
-        REQ_COUNTER["ui"] += 1
+# ──────────────────────────────────────────────────────────────
+# Headers / Security
+# ──────────────────────────────────────────────────────────────
 
 @app.after_request
-def _count_resp(resp):
-    _count(request.path or "")
-    # Keep the response JSON-only for API-like routes
-    if request.path.startswith("/api/") or request.path.endswith(".json"):
-        resp.headers["Content-Type"] = "application/json; charset=utf-8"
-    resp.headers["X-Server-UA"] = CUSTOM_UA
+def set_secure_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    if RELAXED_CSP:
+        # Allow Claude/agent tools to fetch your endpoints freely during MCP runs
+        resp.headers["Content-Security-Policy"] = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:"
+    else:
+        resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
     return resp
 
-@app.get("/api/health")
-def api_health():
-    return ok({
-        "status": "ok",
-        "agent": "BroncoMCP/1.0",
-        "has_robot": HAS_ROBOT,
-        "categories_cached": len(DEFAULT_CATEGORIES)
-    })
+def api_auth_ok() -> bool:
+    """API endpoints must use API key. Prevent HTML login redirects."""
+    key = request.headers.get("X-API-Key")
+    return bool(key and key == API_KEY)
 
-@app.get("/api/metrics")
-def api_metrics():
-    return ok({
-        "status": "success",
-        "uptime_seconds": int(time.time() - START_TS),
-        "requests": REQ_COUNTER
-    })
+def api_unauthorized():
+    return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
-# -----------------------------------------------------------------------------
-# Categories + Search (JSON, strict)
-# -----------------------------------------------------------------------------
+@app.before_request
+def make_session_permanent():
+    session.permanent = True
+
+# ──────────────────────────────────────────────────────────────
+# DB helpers & seed admin
+# ──────────────────────────────────────────────────────────────
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+def get_user(username: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
+        return cur.fetchone()
+
+def add_user(username: str, password_hash: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
+        conn.commit()
+        return True
+
+def ensure_default_admin():
+    """Seed default admin only if missing, or use env ADMIN_USER/PASS."""
+    admin_user = os.environ.get("ADMIN_USER", "admin")
+    admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+    if not get_user(admin_user):
+        try:
+            add_user(admin_user, generate_password_hash(admin_pass))
+            print(f"[seed] Created default admin '{admin_user}'")
+        except Exception as e:
+            print(f"[seed] Could not create default admin: {e}")
+
+init_db()
+ensure_default_admin()
+
+# ──────────────────────────────────────────────────────────────
+# Auth utils & pages
+# ──────────────────────────────────────────────────────────────
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if "user" not in session:
+            return redirect(url_for("login", next=request.path))
+        return view_func(*args, **kwargs)
+    return wrapper
+
+@app.route("/")
+def home():
+    if "user" in session:
+        return redirect(url_for("search_page"))
+    return redirect(url_for("login"))
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        user = get_user(username)
+        if user and check_password_hash(user[1], password):
+            session["user"] = username
+            flash("Logged in successfully!", "success")
+            return redirect(url_for("search_page"))
+        flash("Invalid username or password.", "error")
+    return render_template("login.html")
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        confirm  = request.form.get("confirm") or ""
+        if not username or not password:
+            flash("Please fill out all fields.", "error")
+        elif get_user(username):
+            flash("Username already exists. Try logging in.", "error")
+        elif password != confirm:
+            flash("Passwords do not match.", "error")
+        else:
+            try:
+                pw_hash = generate_password_hash(password)
+                add_user(username, pw_hash)
+                session["user"] = username
+                flash("Account created successfully!", "success")
+                return redirect(url_for("search_page"))
+            except sqlite3.IntegrityError:
+                flash("Username already exists.", "error")
+    return render_template("register.html")
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    flash("Logged out successfully.", "info")
+    return redirect(url_for("login"))
+
+# ──────────────────────────────────────────────────────────────
+# Search page (manual)
+# ──────────────────────────────────────────────────────────────
+
+@app.route("/search", methods=["GET", "POST"])
+@login_required
+def search_page():
+    result = None
+    error = None
+    query = ""
+    if request.method == "POST":
+        query = (request.form.get("query") or "").strip()
+        if not query:
+            error = "Please type a product to search."
+        else:
+            try:
+                data = search_product(query)
+                if data.get("status") == "success":
+                    result = data
+                else:
+                    error = data.get("message", "Search failed.")
+            except Exception as e:
+                error = f"Search failed: {e}"
+    return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
+
+# ──────────────────────────────────────────────────────────────
+# Categories: robust default fallback
+# ──────────────────────────────────────────────────────────────
+
+DEFAULT_CATEGORIES: List[str] = [
+    "Travel", "Mystery", "Historical Fiction", "Sequential Art", "Classics", "Philosophy",
+    "Romance", "Womens Fiction", "Fiction", "Childrens", "Religion", "Nonfiction",
+    "Music", "Default", "Science Fiction", "Sports and Games", "Add a comment",
+    "Fantasy", "New Adult", "Young Adult", "Science", "Poetry", "Paranormal",
+    "Art", "Autobiography", "Parenting", "Adult Fiction", "Humor", "Horror",
+    "History", "Food and Drink", "Christian Fiction", "Business", "Biography",
+    "Thriller", "Contemporary", "Spirituality", "Academic", "Self Help",
+    "Historical", "Christian", "Suspense", "Short Stories", "Novels", "Health",
+    "Politics", "Cultural", "Erotica", "Crime"
+]
+
+def list_categories() -> List[str]:
+    """
+    If you already scrape categories elsewhere, call it here.
+    For now, we return a static robust list so MCP never sees an empty payload.
+    """
+    return DEFAULT_CATEGORIES[:]
+
+# ──────────────────────────────────────────────────────────────
+# JSON API endpoints (MCP-facing). Always JSON + API Key.
+# ──────────────────────────────────────────────────────────────
+
 @app.get("/categories.json")
 def categories_json():
-    """Return the category list as JSON with stable structure."""
+    if not api_auth_ok():
+        return api_unauthorized()
+
     try:
-        cats = list_categories() or []
-        if not isinstance(cats, list) or not cats:
+        cats = list_categories()
+        if not cats:
             cats = DEFAULT_CATEGORIES
         payload = {
             "status": "success",
@@ -161,102 +244,87 @@ def categories_json():
             "categories": cats,
             "timestamp": int(time.time())
         }
-        return ok(payload)
+        return jsonify(payload), 200
     except Exception as e:
-        return err("Failed to load categories.", 500, {"detail": str(e)})
+        return jsonify({
+            "status": "error",
+            "message": "Failed to load categories.",
+            "detail": str(e)
+        }), 500
 
 @app.post("/search-json")
 def search_json():
-    try:
-        data = request.get_json(force=True) or {}
-    except BadRequest:
-        return err("Invalid JSON body.", 400)
-    category = (data.get("product") or data.get("category") or "").strip()
-    result = safe_robot_search(category)
-    # Guarantee a non-empty JSON body
-    if not result:
-        return err("Empty search result.", 500)
-    return ok(result)
+    if not api_auth_ok():
+        return api_unauthorized()
 
-# -----------------------------------------------------------------------------
-# Robust /api/run goal router (Fixes your 500s)
-# -----------------------------------------------------------------------------
+    try:
+        data = request.get_json(force=True)
+    except BadRequest:
+        return jsonify({"status": "error", "message": "Invalid JSON format."}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    product_name = (data.get("product") or "").strip()
+    try:
+        result = search_product(product_name)
+    except Exception as e:
+        result = {"status": "error", "message": f"Search failed: {e}"}
+    return jsonify(result), 200
+
 @app.post("/api/run")
 def api_run():
     """
-    Accepts JSON:
-      {
-        "goal": "list categories" | "health" | "search <term/category>",
-        "timeout_ms": 15000   # optional
-      }
-    Returns structured JSON and never raw HTML.
+    Simple 'accept goal' endpoint so you never get a 500.
+    You can extend this to a real planner if desired.
     """
-    t0 = time.time()
-    try:
-        payload = request.get_json(force=True) or {}
-    except BadRequest:
-        return err("Invalid JSON payload.", 400)
-
-    goal = (payload.get("goal") or "").strip().lower()
-    timeout_ms = int(payload.get("timeout_ms") or 15000)
-
-    if not goal:
-        return err("Missing 'goal' field.", 400)
+    if not api_auth_ok():
+        return api_unauthorized()
 
     try:
-        if "health" in goal:
-            result = {
-                "status": "success",
-                "agent": "BroncoMCP/1.0",
-                "has_robot": HAS_ROBOT,
-                "categories_cached": len(DEFAULT_CATEGORIES)
-            }
+        data = request.get_json(force=True) or {}
+    except Exception:
+        data = {}
 
-        elif "list" in goal and "categor" in goal:
-            cats = list_categories()
-            result = {"status": "success", "categories": cats, "count": len(cats)}
+    goal = (data.get("goal") or "").strip()
+    headless = bool(data.get("headless", True))
+    plan = data.get("plan", [])
 
-        elif goal.startswith("search"):
-            # naive parsing: "search travel", "search romance"
-            parts = goal.split()
-            query = " ".join(parts[1:]) if len(parts) > 1 else ""
-            result = safe_robot_search(query)
+    return jsonify({
+        "status": "accepted",
+        "agent": "BroncoMCP/1.0",
+        "goal": goal,
+        "headless": headless,
+        "plan_steps": len(plan),
+        "timestamp": int(time.time())
+    }), 200
 
-        else:
-            # fallback: return a friendly message
-            result = {
-                "status": "success",
-                "message": f"No built-in handler for goal '{goal}'. "
-                           f"Try 'health', 'list categories', or 'search <term>'."
-            }
+@app.get("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "agent": "BroncoMCP/1.0", "timestamp": int(time.time())}), 200
 
-        latency = int((time.time() - t0) * 1000)
-        return ok({"status": "success", "goal": goal, "latency_ms": latency, "result": result})
+# ──────────────────────────────────────────────────────────────
+# Error Pages
+# ──────────────────────────────────────────────────────────────
 
-    except Exception as e:
-        latency = int((time.time() - t0) * 1000)
-        return err("Goal execution failed.",
-                   500,
-                   {"latency_ms": latency, "detail": str(e), "trace": traceback.format_exc()})
-
-# -----------------------------------------------------------------------------
-# Error handlers (always JSON for API-like paths)
-# -----------------------------------------------------------------------------
 @app.errorhandler(404)
 def _404(_e):
-    if request.path.startswith("/api/") or request.path.endswith(".json"):
-        return err("Not found", 404)
-    # if you also serve HTML pages, you can render a template here
-    return err("Not found", 404)
+    # Show a friendly page, but keep it simple
+    return render_template("index.html"), 404
 
 @app.errorhandler(500)
 def _500(_e):
-    # We avoid leaking stack traces; use metrics/log files for deep debug
-    return err("Internal Server Error", 500)
+    return render_template("index.html"), 500
 
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
+@app.errorhandler(TemplateNotFound)
+def _template_missing(e):
+    print(f"❌ Missing template: {e.name}")
+    return "<h2>Template missing on server. Contact admin.</h2>", 500
+
+# ──────────────────────────────────────────────────────────────
+# Run
+# ──────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    # Local run: `API_KEY=secret123 python app.py`
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    init_db()
+    ensure_default_admin()
+    app.run(host="0.0.0.0", port=5001, debug=True)
