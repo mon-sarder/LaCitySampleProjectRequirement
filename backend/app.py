@@ -2,12 +2,16 @@
 import os
 import sqlite3
 import traceback
+import json
+import uuid
+import time
 from datetime import timedelta
 from functools import wraps
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, flash, jsonify
+    session, flash, jsonify, g
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import BadRequest
@@ -34,25 +38,68 @@ app.permanent_session_lifetime = timedelta(minutes=30)
 DB_PATH = os.path.join(BASE_DIR, "users.db")
 MAX_CRED_LENGTH = 50
 API_KEY = os.environ.get("API_KEY", "secret123")
+RUN_TIMEOUT_SEC = int(os.environ.get("RUN_TIMEOUT_SEC", "45"))
+MAX_GOAL_LEN = int(os.environ.get("MAX_GOAL_LEN", "200"))
 
 # Optional: small CSP helper (relax if env set)
 RELAXED_CSP = os.environ.get("RELAXED_CSP", "").lower() in ("1", "true", "yes")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Observability: request IDs, timing, and counters
+# ──────────────────────────────────────────────────────────────────────────────
+METRICS = {
+    "requests_total": 0,
+    "requests_api": 0,
+    "errors_total": 0,
+    "runs_total": 0,
+    "runs_ok": 0,
+    "runs_err": 0,
+    "categories_total": 0,
+    "search_total": 0,
+}
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+@app.before_request
+def _before_request():
+    g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    g.started_ms = _now_ms()
+    METRICS["requests_total"] += 1
+    if request.path.startswith("/api/") or request.path.endswith(".json"):
+        METRICS["requests_api"] += 1
+
 @app.after_request
 def set_secure_headers(resp):
+    # Attach request id & timing
+    duration_ms = _now_ms() - getattr(g, "started_ms", _now_ms())
+    resp.headers["X-Request-ID"] = getattr(g, "request_id", "-")
+    resp.headers["X-Response-Time-ms"] = str(duration_ms)
+
+    # Security headers
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
     if RELAXED_CSP:
-        # allow inline for local testing/tools
-        resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; "
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        )
     else:
         resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
     return resp
 
-@app.before_request
-def make_session_permanent():
-    session.permanent = True
+def _log(event: str, **kw):
+    # small structured log to stdout
+    payload = {
+        "event": event,
+        "request_id": getattr(g, "request_id", "-"),
+        "path": request.path if request else "-",
+        "method": request.method if request else "-",
+        "ts_ms": _now_ms(),
+    }
+    payload.update(kw or {})
+    print(json.dumps(payload, ensure_ascii=False))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # DB utilities
@@ -73,7 +120,8 @@ def _safe_query(fn):
     try:
         return fn()
     except Exception as e:
-        print(f"[DB] {e}")
+        METRICS["errors_total"] += 1
+        _log("db_error", error=str(e))
         traceback.print_exc()
         return None
 
@@ -111,16 +159,17 @@ def _get_categories_safe():
         if hasattr(rd, fn_name):
             try:
                 cats = getattr(rd, fn_name)()
-                # normalize
                 if isinstance(cats, dict) and "categories" in cats:
                     cats = cats["categories"]
                 if isinstance(cats, (set, tuple)):
                     cats = list(cats)
                 if not isinstance(cats, list):
                     cats = list(cats)
-                return [str(c).strip() for c in cats if str(c).strip()]
+                cats = [str(c).strip() for c in cats if str(c).strip()]
+                METRICS["categories_total"] += 1
+                return cats
             except Exception as e:
-                print(f"[categories] {fn_name} failed: {e}")
+                _log("categories_error", fn=fn_name, error=str(e))
                 traceback.print_exc()
     return []
 
@@ -152,6 +201,9 @@ def login_required(view):
         return view(*args, **kwargs)
     return wrapper
 
+# Thread-pool for time-bounded /api/run
+EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Routes: UI navigation
 # ──────────────────────────────────────────────────────────────────────────────
@@ -173,8 +225,6 @@ def login():
         if user and check_password_hash(user[1], password):
             session["user"] = username
             flash("Logged in successfully!", "success")
-            # Default admin seeding (optional)
-            # seed_admin()  # if you added a helper
             return redirect(url_for("search_page"))
         flash("Invalid username or password.", "error")
     return render_template("login.html")
@@ -222,13 +272,16 @@ def search_page():
             error = "Please type a product to search."
         else:
             try:
+                METRICS["search_total"] += 1
                 data = search_product(query)
                 if data.get("status") == "success":
                     result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
                 else:
                     error = data.get("message", "Search failed.")
             except Exception as e:
+                METRICS["errors_total"] += 1
                 error = f"Search failed: {e}"
+                _log("search_error", error=str(e))
     return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
 # Optional SPA demo (AJAX)
@@ -243,6 +296,11 @@ def demo_index():
 def api_health():
     return jsonify({"status": "ok"})
 
+@app.get("/api/metrics")
+def api_metrics():
+    # Shallow copy to avoid mutation while serializing
+    return jsonify({"status": "ok", "metrics": dict(METRICS)})
+
 @app.get("/categories.json")
 @api_or_login_required
 def categories_json():
@@ -250,6 +308,8 @@ def categories_json():
         cats = _get_categories_safe()
         return jsonify({"status": "ok", "categories": cats})
     except Exception as e:
+        METRICS["errors_total"] += 1
+        _log("categories_error", error=str(e))
         return jsonify({
             "status": "error",
             "message": f"categories failed: {e}",
@@ -268,35 +328,63 @@ def search_json():
 
     product_name = (data.get("product") or "").strip()
     try:
+        METRICS["search_total"] += 1
         result = search_product(product_name)
         return jsonify(result)
     except Exception as e:
+        METRICS["errors_total"] += 1
+        _log("search_error", error=str(e))
         return jsonify({"status": "error", "message": f"Search failed: {e}"}), 500
 
 @app.post("/api/run")
 @api_or_login_required
 def api_run():
-    data = request.get_json(silent=True) or {}
-    goal = (data.get("goal") or "").strip()
-    planner = (data.get("planner") or "builtin").lower()
+    METRICS["runs_total"] += 1
+    try:
+        payload = request.get_json(force=True, silent=False)
+    except Exception:
+        METRICS["runs_err"] += 1
+        return jsonify({"status": "error", "message": "Invalid JSON body."}), 400
+
+    # Accept string or dict (structured) goals
+    goal = payload.get("goal")
+    planner = str(payload.get("planner", "builtin")).lower()
+
+    # Basic hardening
+    if isinstance(goal, str) and len(goal) > MAX_GOAL_LEN:
+        METRICS["runs_err"] += 1
+        return jsonify({"status": "error", "message": f"Goal too long (>{MAX_GOAL_LEN})."}), 400
     if not goal:
-        return jsonify({"status": "error", "message": "Missing 'goal'"}), 400
+        METRICS["runs_err"] += 1
+        return jsonify({"status": "error", "message": "Missing 'goal'."}), 400
 
     headless = not (os.environ.get("HEADFUL", "").lower() in ("1", "true", "yes"))
+    _log("run_start", planner=planner)
 
-    try:
+    def _work():
+        # Import inside worker to isolate any heavy imports from the main thread
         from mcp_agent import run_ai_goal
-    except Exception as e:
+        return run_ai_goal(goal=goal, planner=planner, headless=headless)
+
+    future = EXECUTOR.submit(_work)
+    try:
+        result = future.result(timeout=RUN_TIMEOUT_SEC)
+        if isinstance(result, dict) and result.get("status") == "success":
+            METRICS["runs_ok"] += 1
+        else:
+            METRICS["runs_err"] += 1
+        return jsonify({"status": "ok", "result": result})
+    except TimeoutError:
+        METRICS["runs_err"] += 1
+        future.cancel()
+        _log("run_timeout", timeout_sec=RUN_TIMEOUT_SEC)
         return jsonify({
             "status": "error",
-            "message": f"mcp_agent import failed: {e}",
-            "trace": traceback.format_exc().splitlines()[-5:]
-        }), 500
-
-    try:
-        result = run_ai_goal(goal=goal, planner=planner, headless=headless)
-        return jsonify({"status": "ok", "result": result})
+            "message": f"/api/run timed out after {RUN_TIMEOUT_SEC}s."
+        }), 504
     except Exception as e:
+        METRICS["runs_err"] += 1
+        _log("run_error", error=str(e))
         return jsonify({
             "status": "error",
             "message": f"/api/run failed: {e}",
@@ -312,10 +400,12 @@ def _404(_e):
 
 @app.errorhandler(500)
 def _500(_e):
+    METRICS["errors_total"] += 1
     return render_template("index.html"), 500
 
 @app.errorhandler(TemplateNotFound)
 def _template_missing(e):
+    METRICS["errors_total"] += 1
     print(f"❌ Missing template: {e.name}")
     return "<h2>Template missing on server. Contact admin.</h2>", 500
 

@@ -1,270 +1,193 @@
 # mcp_agent.py
 """
-A lightweight "AI Brain" that executes a goal in a single, fast Playwright session,
-with a safe HTTP JSON fallback if the browser cannot be launched.
+MCP Agent: fast, observable, and resilient.
 
-Public API:
-  run_ai_goal(goal: str, planner: str = "builtin", headless: bool = True) -> dict
+- Structured goals: accepts either a plain string or a structured dict:
+    {"intent": "search_product", "query": "travel"}
+  (You can add more intents later.)
+
+- Speed tuners via env:
+    PW_HEADLESS      = "1" | "0"         (default: 1)
+    CLICK_DELAY_MS   = int (default: 0)
+    NAV_TIMEOUT_MS   = int (default: 10000)
+    MAX_STEPS        = int (default: 3)
+
+- Observability:
+    returns a full result object with:
+        run_id, timings, steps, logs, status, error (if any)
+
+- Hardening:
+    input validation, bounded steps, default timeouts, and defensive
+    try/except around all robot calls.
+
+Note: This agent uses your existing robot_driver.search_product(). It
+doesn't require OpenAI or external LLMs for now ('builtin' planner).
 """
 
 from __future__ import annotations
+import os
+import time
+import uuid
+import traceback
+from typing import Dict, Any, List, Tuple
 
-import re
-import json
-import asyncio
-import urllib.request
-import urllib.error
-from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Optional
+# Your Playwright driver
+import robot_driver as rd  # must expose search_product(query: str) -> dict
+from robot_driver import search_product as _search_product
 
-# ──────────────────────────────────────────────────────────────────────────────
-# User-Agent reuse
-# ──────────────────────────────────────────────────────────────────────────────
-try:
-    from robot_driver import CUSTOM_UA  # keep UA consistent with driver
-except Exception:
-    CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
+# ---------- Speed Tuners (env) ----------
+PW_HEADLESS   = os.environ.get("PW_HEADLESS", "1").lower() in ("1", "true", "yes")
+CLICK_DELAY   = int(os.environ.get("CLICK_DELAY_MS", "0"))       # ms
+NAV_TIMEOUT   = int(os.environ.get("NAV_TIMEOUT_MS", "10000"))   # ms
+MAX_STEPS     = int(os.environ.get("MAX_STEPS", "3"))
+CUSTOM_UA     = os.environ.get(
+    "CUSTOM_UA",
+    "BroncoMCP/1.0 (+local; Playwright bot) AppleWebKit/537.36"
+)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Optional Playwright (we degrade gracefully if not present)
-# ──────────────────────────────────────────────────────────────────────────────
-_playwright_ok = True
-try:
-    from playwright.async_api import async_playwright
-except Exception:
-    _playwright_ok = False
-    async_playwright = None  # type: ignore
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
-DEFAULT_TIMEOUT_MS = 5000
-DEFAULT_NAV_TIMEOUT_MS = 8000
-HEADLESS_ARGS = [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--disable-extensions",
-]
-
-BASE = "http://localhost:5001"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Small HTTP helpers (fallback path)
-# ──────────────────────────────────────────────────────────────────────────────
-def _http_get_json(path: str, payload: Optional[dict] = None) -> dict:
-    """
-    GET (or POST if payload is provided) JSON from the Flask API with the API key header.
-    """
-    url = path if path.startswith("http") else f"{BASE}{path}"
-    headers = {
-        "User-Agent": CUSTOM_UA,
-        "Accept": "application/json",
-        "X-API-Key": "secret123",  # Same default as your Flask app (env can override for prod)
-        "Content-Type": "application/json",
+def _ok(result: Dict[str, Any], step_logs: List[Dict[str, Any]], run_id: str,
+        t0: int) -> Dict[str, Any]:
+    return {
+        "status": "success",
+        "agent": "BroncoMCP/1.0",
+        "run_id": run_id,
+        "timings": {
+            "started_ms": t0,
+            "ended_ms": _now_ms(),
+            "duration_ms": _now_ms() - t0,
+        },
+        "steps": step_logs,
+        "result": result,
     }
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+def _err(message: str, step_logs: List[Dict[str, Any]], run_id: str,
+         t0: int, exc: Exception | None = None) -> Dict[str, Any]:
+    payload = {
+        "status": "error",
+        "agent": "BroncoMCP/1.0",
+        "run_id": run_id,
+        "message": message,
+        "timings": {
+            "started_ms": t0,
+            "ended_ms": _now_ms(),
+            "duration_ms": _now_ms() - t0,
+        },
+        "steps": step_logs,
+    }
+    if exc:
+        payload["trace"] = traceback.format_exc().splitlines()[-12:]
+    return payload
+
+def _parse_goal(goal: Any) -> Tuple[str, Dict[str, Any]]:
+    """
+    Returns (intent, params)
+    Supported:
+      - string goal -> ("search_product", {"query": goal})
+      - dict goal with {"intent": "...", "query": "..."}
+    """
+    if isinstance(goal, dict):
+        intent = str(goal.get("intent", "search_product")).strip().lower()
+        params = {k: v for k, v in goal.items() if k != "intent"}
+        return intent, params
+
+    # Fallback: plain string
+    g = (goal or "").strip()
+    return "search_product", {"query": g}
+
+def _bounded_steps(n: int) -> int:
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            body = resp.read()
-            return json.loads(body.decode("utf-8"))
-    except urllib.error.HTTPError as e:
+        n = int(n)
+    except Exception:
+        n = 1
+    return max(1, min(n, MAX_STEPS))
+
+def _call_search(query: str, step_logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Wraps the existing robot_driver.search_product with timing and UA/timeout
+    hints where possible. Your robot_driver may ignore extras; that’s fine.
+    """
+    step_t0 = _now_ms()
+    meta = {
+        "user_agent": CUSTOM_UA,
+        "headless": PW_HEADLESS,
+        "click_delay_ms": CLICK_DELAY,
+        "nav_timeout_ms": NAV_TIMEOUT,
+    }
+    try:
+        # If your robot_driver.search_product accepts kwargs, they'll be used.
+        # If not, Python will complain—so try kwargs then fallback to positional.
         try:
-            return json.loads(e.read().decode("utf-8"))
-        except Exception:
-            return {"status": "error", "message": f"HTTP {e.code} for {url}"}
+            result = _search_product(query=query, **meta)
+        except TypeError:
+            # Older signature: search_product(query: str)
+            result = _search_product(query)
+
+        step_logs.append({
+            "name": "search_product",
+            "query": query,
+            "meta": meta,
+            "started_ms": step_t0,
+            "ended_ms": _now_ms(),
+            "duration_ms": _now_ms() - step_t0,
+            "status": result.get("status", "unknown"),
+        })
+        return result
     except Exception as e:
-        return {"status": "error", "message": f"Network error for {url}: {e}"}
+        step_logs.append({
+            "name": "search_product",
+            "query": query,
+            "meta": meta,
+            "started_ms": step_t0,
+            "ended_ms": _now_ms(),
+            "duration_ms": _now_ms() - step_t0,
+            "status": "error",
+            "error": str(e),
+        })
+        raise
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Playwright helpers
-# ──────────────────────────────────────────────────────────────────────────────
-@asynccontextmanager
-async def _fast_ctx(headless: bool = True):
+def _builtin_planner(goal: Any, headless: bool) -> Dict[str, Any]:
     """
-    Launch fast Chromium context. If anything fails, re-raise to let caller
-    trigger the HTTP fallback path.
+    Simple non-LLM executor:
+      - Parses intent
+      - Executes up to MAX_STEPS bounded actions (currently just search).
     """
-    async with async_playwright() as p:  # type: ignore
-        browser = await p.chromium.launch(headless=headless, args=HEADLESS_ARGS)
-        context = await browser.new_context(user_agent=CUSTOM_UA)
-        # set default timeouts (sync APIs on context)
-        context.set_default_timeout(DEFAULT_TIMEOUT_MS)
-        context.set_default_navigation_timeout(DEFAULT_NAV_TIMEOUT_MS)
-        page = await context.new_page()
-        try:
-            yield browser, context, page
-        finally:
-            await browser.close()
-
-
-async def _goto(page, url: str):
-    await page.goto(url, wait_until="domcontentloaded")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Built-in goal executor
-# ──────────────────────────────────────────────────────────────────────────────
-async def _builtin_executor_with_browser(goal: str, headless: bool = True) -> Dict[str, Any]:
-    """
-    Heuristic browser-driven flow:
-      - open /search (or /demo)
-      - auto-login (admin/admin123) if needed
-      - list categories OR search desired category
-      - collect first items if present
-    """
-    goal_l = goal.lower()
-
-    async with _fast_ctx(headless=headless) as (_b, _c, page):
-        # Decide landing page
-        if "/search" in goal_l:
-            target = f"{BASE}/search"
-        elif "/demo" in goal_l:
-            target = f"{BASE}/demo"
-        else:
-            target = f"{BASE}/search"
-
-        await _goto(page, target)
-
-        # If login appears, use default admin creds (seeded by app.py on startup)
-        try:
-            if ("login" in (page.url or "")) or (
-                await page.locator('input[name="username"]').count()
-                and await page.locator('button[type="submit"]').count()
-            ):
-                await page.fill('input[name="username"]', "admin")
-                await page.fill('input[name="password"]', "admin123")
-                await page.click('button[type="submit"]')
-                await page.wait_for_load_state("domcontentloaded")
-        except Exception:
-            # Login is best-effort; continue either way
-            pass
-
-        # If user asked to list categories
-        if "list categories" in goal_l or "all categories" in goal_l:
-            btn = page.locator('button[name="list_all"]')
-            if await btn.count():
-                await btn.click()
-                await page.wait_for_load_state("domcontentloaded")
-
-            chips = page.locator(".category-list a")
-            cats = [c.strip() for c in await chips.all_inner_texts()] if await chips.count() else []
-            return {"status": "success", "agent": "BroncoMCP/1.0", "action": "list_categories", "categories": cats}
-
-        # Extract desired category
-        m = re.search(r"(?:category|search)\s+(?:for\s+)?['\"]?([a-zA-Z ]+)['\"]?", goal_l)
-        desired = m.group(1).strip() if m else None
-
-        if desired:
-            # Use the search bar
-            if await page.locator('input[name="query"]').count():
-                await page.fill('input[name="query"]', desired)
-                if await page.locator('button[type="submit"]').count():
-                    await page.click('button[type="submit"]')
-                    await page.wait_for_load_state("domcontentloaded")
-
-            # If category chips are shown, click the closest match
-            choices = page.locator(".category-list a")
-            if await choices.count():
-                texts = await choices.all_inner_texts()
-                pick_idx = None
-                d = desired.lower()
-                for idx, t in enumerate(texts):
-                    if d in t.lower():
-                        pick_idx = idx
-                        break
-                if pick_idx is None and texts:
-                    pick_idx = 0
-                if pick_idx is not None:
-                    await choices.nth(pick_idx).click()
-                    await page.wait_for_load_state("domcontentloaded")
-
-        # Collect items if present
-        if await page.locator(".product_pod").count():
-            titles = await page.locator(".product_pod h3 a").all_inner_texts()
-            prices = await page.locator(".price_color").all_inner_texts()
-            items = [{"title": t.strip(), "price": p.strip()} for t, p in zip(titles, prices)]
-            return {
-                "status": "success",
-                "agent": "BroncoMCP/1.0",
-                "action": "collect_items",
-                "count": len(items),
-                "items": items[:5],
-            }
-
-        return {"status": "noop", "agent": "BroncoMCP/1.0", "message": "No items found or goal too vague.", "url": page.url}
-
-
-def _builtin_executor_http_fallback(goal: str) -> Dict[str, Any]:
-    """
-    No-browser path:
-      - If asked to list categories → GET /categories.json
-      - Else try to extract a desired category and POST /search-json
-    """
-    goal_l = goal.lower()
-
-    if "list categories" in goal_l or "all categories" in goal_l:
-        res = _http_get_json("/categories.json")
-        if res.get("status") == "ok":
-            return {"status": "success", "agent": "BroncoMCP/1.0", "action": "list_categories", "categories": res.get("categories", [])}
-        return {"status": "error", "agent": "BroncoMCP/1.0", "message": res.get("message", "categories failed")}
-
-    m = re.search(r"(?:category|search)\s+(?:for\s+)?['\"]?([a-zA-Z ]+)['\"]?", goal_l)
-    desired = m.group(1).strip() if m else ""
-    res = _http_get_json("/search-json", payload={"product": desired})
-    # Pass through the server's response (it already returns status / items)
-    if isinstance(res, dict):
-        res.setdefault("agent", "BroncoMCP/1.0")
-        return res
-    return {"status": "error", "agent": "BroncoMCP/1.0", "message": "Unexpected response type from /search-json"}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Public API
-# ──────────────────────────────────────────────────────────────────────────────
-def run_ai_goal(goal: str, planner: str = "builtin", headless: bool = True) -> Dict[str, Any]:
-    """
-    Entry point used by Flask /api/run.
-    - Attempts a fast Playwright run first (if available)
-    - Falls back to HTTP API calls if Playwright is unavailable or fails
-    - Always returns structured JSON
-    """
-    async def _run() -> Dict[str, Any]:
-        if planner != "builtin":
-            # Only builtin is supported; keep UX consistent
-            pass
-
-        # Try the browser path first when Playwright is present
-        if _playwright_ok:
-            try:
-                return await _builtin_executor_with_browser(goal, headless=headless)
-            except Exception as e:
-                # Fall through to HTTP fallback with context
-                return {
-                    "status": "warn",
-                    "agent": "BroncoMCP/1.0",
-                    "message": f"Playwright path failed, using HTTP fallback: {e}",
-                    "fallback": _builtin_executor_http_fallback(goal),
-                }
-
-        # If Playwright isn't available, go straight to HTTP fallback
-        return _builtin_executor_http_fallback(goal)
+    t0 = _now_ms()
+    run_id = str(uuid.uuid4())
+    step_logs: List[Dict[str, Any]] = []
 
     try:
-        return asyncio.run(_run())
-    except RuntimeError as e:
-        # Handles edge cases like "asyncio.run() cannot be called from a running event loop"
-        # by switching to a soon-completed task approach.
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                coro = _run()
-                return loop.run_until_complete(coro)  # type: ignore[func-returns-value]
-        except Exception:
-            pass
-        return {"status": "error", "agent": "BroncoMCP/1.0", "message": f"Async runtime error: {e}"}
+        intent, params = _parse_goal(goal)
+        if intent not in ("search_product",):
+            return _err(f"Unsupported intent '{intent}'", step_logs, run_id, t0, None)
+
+        q = str(params.get("query", "")).strip()
+        if not q:
+            return _err("Missing 'query' for search_product.", step_logs, run_id, t0, None)
+
+        # bounded execution
+        steps = _bounded_steps(params.get("steps", 1))
+        last = {}
+        for _ in range(steps):
+            last = _call_search(q, step_logs)
+            # if we succeeded, stop early
+            if last.get("status") == "success":
+                break
+        return _ok(last, step_logs, run_id, t0)
+
     except Exception as e:
-        return {"status": "error", "agent": "BroncoMCP/1.0", "message": f"Unhandled error: {e}"}
+        return _err(f"Planner failed: {e}", step_logs, run_id, t0, e)
+
+def run_ai_goal(goal: Any, planner: str = "builtin", headless: bool = True) -> Dict[str, Any]:
+    """
+    Public entry used by /api/run.
+    - goal: string or dict
+    - planner: currently "builtin" (no external LLMs).
+    - headless: kept for API parity; we also read PW_HEADLESS env.
+
+    Returns structured dict (see _ok/_err above).
+    """
+    # For now we only support the built-in non-LLM planner
+    return _builtin_planner(goal=goal, headless=headless)
