@@ -149,8 +149,21 @@ def api_metrics():
 # -----------------------------------------------------------------------------
 @app.get("/categories.json")
 def categories_json():
-    cats = list_categories()
-    return ok({"status": "success", "count": len(cats), "categories": cats})
+    """Return the category list as JSON with stable structure."""
+    try:
+        cats = list_categories() or []
+        if not isinstance(cats, list) or not cats:
+            cats = DEFAULT_CATEGORIES
+        payload = {
+            "status": "success",
+            "agent": "BroncoMCP/1.0",
+            "count": len(cats),
+            "categories": cats,
+            "timestamp": int(time.time())
+        }
+        return ok(payload)
+    except Exception as e:
+        return err("Failed to load categories.", 500, {"detail": str(e)})
 
 @app.post("/search-json")
 def search_json():
