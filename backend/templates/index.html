@@ -1,280 +1,246 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Playwright Robot Driver</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Robot Driver Demo</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    /* minimal sensible defaults; your style.css can override */
+    :root { --gap: 12px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; color: #111; }
+    header { padding: 16px; border-bottom: 1px solid #eee; display: flex; gap: var(--gap); flex-wrap: wrap; align-items: center; }
+    header h1 { font-size: 18px; margin: 0; }
+    .container { max-width: 980px; margin: 0 auto; padding: 16px; }
+    .row { display: flex; flex-wrap: wrap; gap: var(--gap); }
+    .card { background: #fff; border: 1px solid #eee; border-radius: 12px; padding: 16px; flex: 1 1 320px; }
+    .stack { display: grid; gap: 10px; }
+    label { font-weight: 600; font-size: 13px; }
+    input[type="text"] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; }
+    button { padding: 10px 14px; border: 1px solid #ddd; border-radius: 10px; background: #f6f7f8; cursor: pointer; }
+    button.primary { background: #111; color: #fff; border-color: #111; }
+    button.link { background: transparent; border: none; color: #0a63ff; padding: 0; cursor: pointer; }
+    .muted { color: #666; font-size: 13px; }
+    .ok { color: #0a7f2e; }
+    .err { color: #b00020; white-space: pre-wrap; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { padding: 6px 10px; border: 1px solid #ddd; border-radius: 999px; cursor: pointer; background: #fafafa; }
+    .chip:hover { background: #f0f0f0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    pre { background: #fafafa; border: 1px solid #eee; border-radius: 10px; padding: 12px; overflow: auto; }
+    .hidden { display: none !important; }
+    .inline { display: inline-flex; align-items: center; gap: 8px; }
+  </style>
 </head>
 <body>
-  <main class="container" role="main">
-    <!-- Header -->
-    <header class="header">
-      <div class="logo">🤖</div>
-      <div>
-        <h1>Playwright Robot Driver</h1>
-        <p class="sub">Run a fixed browser task, a demo login, or an AI-planned task.</p>
-      </div>
-    </header>
+  <header>
+    <h1>Robot Driver — Demo Console</h1>
+    <div class="inline">
+      <label for="apiKey">API Key</label>
+      <input id="apiKey" type="text" placeholder="secret123" style="width: 240px;">
+      <button id="saveKey">Save</button>
+      <span id="keySaved" class="muted"></span>
+    </div>
+  </header>
 
-    <!-- Product / Category task -->
-    <form id="botForm" class="card" autocomplete="off">
-      <label for="productInput" class="label">Product / Category</label>
-      <div class="row">
-        <input
-          id="productInput"
-          name="product"
-          type="text"
-          placeholder="Try: Travel, Music, Food and Drink…"
-          aria-label="Product or category to search"
-        />
-        <button id="runBtn" type="submit" class="btn">Run Bot</button>
-      </div>
-      <p class="hint">
-        Uses <em>Books to Scrape</em>. If your entry doesn’t closely match a category, all categories
-        will be listed below as clickable options.
-      </p>
-    </form>
+  <main class="container">
+    <div class="row">
+      <!-- Health / Connectivity -->
+      <section class="card stack" aria-labelledby="healthH">
+        <h2 id="healthH">Server Health</h2>
+        <div class="inline" style="gap:8px">
+          <button id="btnHealth" class="primary">Test /api/health</button>
+          <span id="healthStatus" class="muted"></span>
+        </div>
+        <pre id="healthOut" class="mono hidden"></pre>
+      </section>
 
-    <!-- Demo login task -->
-    <form id="loginForm" class="card" autocomplete="off" onsubmit="return false;">
-      <p class="label">Demo Login Automation</p>
-      <div class="stack">
-        <input id="loginUser" type="text" placeholder="Username (max 50 chars)" maxlength="50" />
-        <input id="loginPass" type="password" placeholder="Password (max 50 chars)" maxlength="50" />
-      </div>
-      <div class="row mt-2">
-        <div></div>
-        <button id="loginBtn" type="button" class="btn">Run Login Test</button>
-      </div>
-      <p class="hint">Public test creds: <code>student</code> / <code>Password123</code>.</p>
-    </form>
+      <!-- Categories -->
+      <section class="card stack" aria-labelledby="catsH">
+        <h2 id="catsH">Categories</h2>
+        <div class="inline" style="gap:8px">
+          <button id="btnShowCats" class="primary">Show categories</button>
+          <button id="btnRefreshCats">Refresh</button>
+          <span id="catsStatus" class="muted"></span>
+        </div>
+        <div id="catsWrap" class="stack hidden">
+          <div id="catChips" class="chips"></div>
+          <pre id="catsJson" class="mono hidden"></pre>
+        </div>
+      </section>
 
-    <!-- MCP AI goal -->
-    <form id="mcpForm" class="card" autocomplete="off" onsubmit="return false;">
-      <label for="goalInput" class="label">AI Goal (MCP)</label>
-      <div class="row">
-        <input id="goalInput" type="text" placeholder="e.g., Open Travel and return the first book’s price" />
-        <button id="mcpBtn" type="button" class="btn">Run AI Plan</button>
-      </div>
-      <p class="hint">Planner: <code>builtin</code> (no API key). Switch to <code>openai</code> in code if desired.</p>
-    </form>
-
-    <!-- Status -->
-    <section id="status" class="status hidden" aria-live="polite">
-      <div class="spinner" aria-hidden="true"></div>
-      <span id="statusText">Running automation…</span>
-    </section>
-
-    <!-- Result -->
-    <section id="result" class="card hidden" aria-live="polite">
-      <div id="resultIcon" class="icon"></div>
-      <div class="result-body">
-        <h2 id="resultTitle"></h2>
-        <p id="resultPrice" class="price"></p>
-        <p id="resultMeta" class="meta"></p>
-        <pre id="resultJson" class="meta" style="white-space:pre-wrap;"></pre>
-      </div>
-    </section>
-
-    <!-- Choices (categories fallback) -->
-    <section id="choices" class="card hidden" aria-live="polite">
-      <h2>Pick a Category</h2>
-      <p class="hint">We couldn’t find a close match. Choose one of the available categories:</p>
-      <div id="choicesList" class="chip-list"></div>
-    </section>
+      <!-- Search -->
+      <section class="card stack" aria-labelledby="searchH">
+        <h2 id="searchH">Search</h2>
+        <form id="searchForm" class="stack" autocomplete="off">
+          <label for="query">Category or keyword</label>
+          <input id="query" type="text" name="query" placeholder="e.g., Travel, Mystery, Music" />
+          <div class="inline">
+            <button type="submit" class="primary">Search</button>
+            <span class="muted">POST /search-json</span>
+          </div>
+        </form>
+        <div id="searchStatus" class="muted"></div>
+        <pre id="searchOut" class="mono hidden"></pre>
+      </section>
+    </div>
   </main>
 
   <script>
-    // Elements
-    const form = document.getElementById("botForm");
-    const runBtn = document.getElementById("runBtn");
-    const input = document.getElementById("productInput");
+    // ---------- Small helpers ----------
+    const $ = sel => document.querySelector(sel);
+    const show = (el, on = true) => el.classList.toggle('hidden', !on);
+    const setText = (el, txt) => { el.textContent = txt; };
 
-    const loginBtn = document.getElementById("loginBtn");
-    const loginUser = document.getElementById("loginUser");
-    const loginPass = document.getElementById("loginPass");
-
-    const mcpBtn = document.getElementById("mcpBtn");
-    const goalInput = document.getElementById("goalInput");
-
-    const statusBox = document.getElementById("status");
-    const statusText = document.getElementById("statusText");
-
-    const result = document.getElementById("result");
-    const resultIcon = document.getElementById("resultIcon");
-    const resultTitle = document.getElementById("resultTitle");
-    const resultPrice = document.getElementById("resultPrice");
-    const resultMeta = document.getElementById("resultMeta");
-    const resultJson = document.getElementById("resultJson");
-
-    const choices = document.getElementById("choices");
-    const choicesList = document.getElementById("choicesList");
-
-    const MAX_CRED_LENGTH = 50;
-
-    // UI utils
-    function show(el) { el.classList.remove("hidden"); }
-    function hide(el) { el.classList.add("hidden"); }
-    function iconSuccess(){
-      return `
-        <svg viewBox="0 0 24 24" class="svg success" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M7 12l3 3 7-7" />
-        </svg>`;
+    function getApiKey() {
+      return localStorage.getItem('robot_api_key') || 'secret123';
     }
-    function iconError(){
-      return `
-        <svg viewBox="0 0 24 24" class="svg error" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M8 8l8 8M16 8l-8 8" />
-        </svg>`;
-    }
-    function resetResult() {
-      resultTitle.textContent = "";
-      resultPrice.textContent = "";
-      resultMeta.textContent = "";
-      resultJson.textContent = "";
-      resultIcon.innerHTML = "";
-    }
-    function clearChoices() {
-      choicesList.innerHTML = "";
-      hide(choices);
-    }
-    function renderChoices(arr) {
-      choicesList.innerHTML = "";
-      arr.forEach(cat => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "chip";
-        btn.textContent = cat;
-        btn.addEventListener("click", async () => {
-          input.value = cat;
-          await runAutomation(async () => {
-            const res = await fetch("/search-json", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product: cat })
-            });
-            return res.json();
-          }, `Searching in "${cat}"…`);
-        });
-        choicesList.appendChild(btn);
-      });
-      show(choices);
+    function saveApiKey(v) {
+      localStorage.setItem('robot_api_key', v || '');
     }
 
-    // Core runner (shared UX)
-    async function runAutomation(task, statusMessage = "Running automation…") {
-      hide(result);
-      clearChoices();
-      resetResult();
+    async function apiFetch(path, opts = {}) {
+      const controller = new AbortController();
+      const timeoutMs = opts.timeoutMs ?? 12000;
+      const t = setTimeout(() => controller.abort('timeout'), timeoutMs);
 
-      runBtn.disabled = true; input.disabled = true;
-      loginBtn.disabled = true; goalInput.disabled = true; mcpBtn.disabled = true;
-
-      show(statusBox); statusText.textContent = statusMessage;
-
-      const t0 = performance.now();
       try {
-        const data = await task();
-        const ms = Math.round(performance.now() - t0);
-
-        if (data.status === "success") {
-          resultIcon.innerHTML = iconSuccess();
-          if (data.items && data.category) {
-            // success from /search-json (category + items)
-            resultTitle.textContent = `Category: ${data.category}`;
-            resultPrice.textContent = "";
-            const lines = (data.items || []).map(it => `• ${it.title} — ${it.price}`).join("\n");
-            resultJson.textContent = lines || "(No items on first page)";
-          } else {
-            // generic success
-            if (data.title || data.price) {
-              resultTitle.textContent = data.title ? `Product: ${data.title}` : "Success";
-              resultPrice.textContent = data.price ? `Price: ${data.price}` : "";
-            } else if (data.message) {
-              resultTitle.textContent = data.message;
-            } else {
-              resultTitle.textContent = "Success";
-            }
-          }
-          resultMeta.textContent = (data.meta ? data.meta + " • " : "") + `Completed in ${ms} ms`;
-          hide(statusBox); show(result);
-
-        } else if (data.status === "choices") {
-          resultIcon.innerHTML = iconError();
-          resultTitle.textContent = "Pick a category";
-          resultMeta.textContent = data.message || "No close match found.";
-          hide(statusBox); show(result);
-          if (Array.isArray(data.categories) && data.categories.length) {
-            renderChoices(data.categories);
-          }
-
+        const headers = Object.assign({
+          'Accept': 'application/json',
+          'X-API-Key': getApiKey()
+        }, opts.headers || {});
+        const res = await fetch(path, {
+          method: opts.method || 'GET',
+          headers,
+          body: opts.body || undefined,
+          signal: controller.signal,
+        });
+        const ct = res.headers.get('content-type') || '';
+        let data = null;
+        if (ct.includes('application/json')) {
+          data = await res.json();
         } else {
-          resultIcon.innerHTML = iconError();
-          resultTitle.textContent = "Automation failed";
-          resultMeta.textContent = data.message || "Unknown error";
-          hide(statusBox); show(result);
+          data = { status: 'error', message: 'Non-JSON response', text: await res.text() };
         }
-      } catch (err) {
-        resultIcon.innerHTML = iconError();
-        resultTitle.textContent = "Network error";
-        resultMeta.textContent = String(err);
-        hide(statusBox); show(result);
+        return { ok: res.ok, status: res.status, data };
       } finally {
-        runBtn.disabled = false; input.disabled = false;
-        loginBtn.disabled = false; goalInput.disabled = false; mcpBtn.disabled = false;
+        clearTimeout(t);
       }
     }
 
-    // Product flow (SPA)
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      await runAutomation(async () => {
-        const product = input.value.trim();
-        const res = await fetch("/search-json", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product })
-        });
-        return res.json();
-      });
+    function renderJSON(el, obj) {
+      el.textContent = JSON.stringify(obj, null, 2);
+      show(el, true);
+    }
+
+    // ---------- API Key controls ----------
+    const apiKeyInput = $('#apiKey');
+    apiKeyInput.value = getApiKey();
+    $('#saveKey').addEventListener('click', () => {
+      saveApiKey(apiKeyInput.value.trim());
+      setText($('#keySaved'), 'Saved ✓');
+      setTimeout(() => setText($('#keySaved'), ''), 1200);
     });
 
-    // Login test (client-side 50-char guard mirrors backend)
-    loginBtn.addEventListener("click", async () => {
-      const user = loginUser.value || "";
-      const pass = loginPass.value || "";
-      if (user.length > MAX_CRED_LENGTH || pass.length > MAX_CRED_LENGTH) {
-        resultIcon.innerHTML = iconError();
-        resultTitle.textContent = "Input rejected";
-        resultMeta.textContent = `Possible buffer overflow attempt: username or password exceeds ${MAX_CRED_LENGTH} characters.`;
-        hide(statusBox); show(result);
+    // ---------- Health ----------
+    $('#btnHealth').addEventListener('click', async () => {
+      setText($('#healthStatus'), 'Checking…');
+      show($('#healthOut'), false);
+      const r = await apiFetch('/api/health');
+      if (r.ok) {
+        setText($('#healthStatus'), 'OK');
+        renderJSON($('#healthOut'), r.data);
+      } else {
+        setText($('#healthStatus'), `Error (${r.status})`);
+        renderJSON($('#healthOut'), r.data);
+      }
+    });
+
+    // ---------- Categories ----------
+    async function loadCategories({ force = false } = {}) {
+      setText($('#catsStatus'), 'Loading…');
+      show($('#catsWrap'), true);
+      $('#catChips').innerHTML = '';
+      show($('#catsJson'), false);
+
+      // session cache
+      if (!force) {
+        const cached = sessionStorage.getItem('robot_cats');
+        if (cached) {
+          const data = JSON.parse(cached);
+          drawCategories(data.categories || []);
+          setText($('#catsStatus'), `Loaded from cache (${data.count || (data.categories||[]).length})`);
+          return;
+        }
+      }
+
+      const r = await apiFetch('/categories.json');
+      if (r.ok && r.data && r.data.categories) {
+        const cats = r.data.categories;
+        drawCategories(cats);
+        sessionStorage.setItem('robot_cats', JSON.stringify({ categories: cats, count: cats.length }));
+        setText($('#catsStatus'), `Loaded ${cats.length}`);
+        // Also show raw JSON (optional; keeps Claude happy during demos)
+        renderJSON($('#catsJson'), r.data);
+      } else {
+        setText($('#catsStatus'), `Error (${r.status})`);
+        renderJSON($('#catsJson'), r.data);
+      }
+    }
+
+    function drawCategories(cats) {
+      const wrap = $('#catChips');
+      wrap.innerHTML = '';
+      if (!Array.isArray(cats) || cats.length === 0) {
+        wrap.innerHTML = '<span class="muted">No categories found.</span>';
         return;
       }
-      await runAutomation(async () => {
-        const res = await fetch("/login-test", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: user, password: pass })
-        });
-        return res.json();
-      }, "Running login automation…");
-    });
+      cats.forEach(name => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.setAttribute('aria-label', `Category ${name}`);
+        chip.addEventListener('click', () => runSearch(name));
+        wrap.appendChild(chip);
+      });
+    }
 
-    // MCP AI goal
-    mcpBtn.addEventListener("click", async () => {
-      const goal = goalInput.value.trim();
-      if (!goal) return;
-      await runAutomation(async () => {
-        const res = await fetch("/mcp/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ goal, planner: "builtin" })
-        });
-        return res.json();
-      }, "Planning with MCP and executing…");
+    $('#btnShowCats').addEventListener('click', () => loadCategories({ force: false }));
+    $('#btnRefreshCats').addEventListener('click', () => loadCategories({ force: true }));
+
+    // ---------- Search ----------
+    async function runSearch(q) {
+      const query = (q ?? $('#query').value).trim();
+      if (!query) {
+        setText($('#searchStatus'), 'Type something to search.');
+        show($('#searchOut'), false);
+        return;
+      }
+      setText($('#searchStatus'), 'Searching…');
+      show($('#searchOut'), false);
+
+      const r = await apiFetch('/search-json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product: query })
+      });
+
+      if (r.ok) {
+        setText($('#searchStatus'), 'Success');
+        renderJSON($('#searchOut'), r.data);
+      } else if (r.status === 401) {
+        setText($('#searchStatus'), 'Unauthorized — set a valid API key and try again.');
+        renderJSON($('#searchOut'), r.data);
+      } else {
+        setText($('#searchStatus'), `Error (${r.status})`);
+        renderJSON($('#searchOut'), r.data);
+      }
+    }
+
+    $('#searchForm').addEventListener('submit', (e) => {
+      e.preventDefault(); // prevent full-page nav on Enter
+      runSearch();
     });
   </script>
 </body>

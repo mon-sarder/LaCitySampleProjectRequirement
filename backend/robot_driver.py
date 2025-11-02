@@ -1,121 +1,107 @@
 # robot_driver.py
-"""
-Fast Playwright helpers for the Required Core demo.
-- Headless Chromium
-- Tight timeouts (3s / 5s)
-- domcontentloaded waits
-- Minimal scraping
+import time
+import requests
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-Public API:
-  - search_product(query: str, agent="BroncoMCP/1.0", headless=True) -> dict
-  - list_categories(agent="BroncoMCP/1.0", headless=True) -> dict
-"""
+# Reusable UA (also imported by mcp_agent)
+CUSTOM_UA = (
+    "BroncoMCP/1.0 (+https://github.com/mon-sarder/LaCitySampleProjectRequirement)"
+)
 
-import asyncio
-from contextlib import asynccontextmanager
-from playwright.async_api import async_playwright
+BASE_URL = "http://books.toscrape.com/"
 
-# ---------- Speed / runtime knobs ----------
-DEFAULT_TIMEOUT_MS = 3000          # element waits
-DEFAULT_NAV_TIMEOUT_MS = 5000      # navigation waits
-HEADLESS_ARGS = [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--disable-extensions",
-]
+# Map user input -> site category display name (used by search_product)
+CATEGORY_NAMES = {
+    "music": "Music",
+    "food": "Food and Drink",
+    "food and drink": "Food and Drink",
+    "travel": "Travel",
+    "poetry": "Poetry",
+    "mystery": "Mystery",
+    "historical": "Historical Fiction",
+    "historical fiction": "Historical Fiction",
+    "fiction": "Fiction",
+}
 
-# Shared UA with mcp_agent.py
-CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
-
-
-@asynccontextmanager
-async def _browser_ctx(headless: bool = True):
-    """Fast chromium context with tight timeouts."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless, args=HEADLESS_ARGS)
-        context = await browser.new_context(user_agent=CUSTOM_UA)
-        context.set_default_timeout(DEFAULT_TIMEOUT_MS)
-        context.set_default_navigation_timeout(DEFAULT_NAV_TIMEOUT_MS)
-        page = await context.new_page()
-        try:
-            yield browser, context, page
-        finally:
-            await browser.close()
+# Simple cache for list_categories()
+_cache = {"cats": {"ts": 0.0, "data": []}}
+_CACHE_TTL = 60 * 10  # 10 min
 
 
-async def _goto(page, url: str):
-    await page.goto(url, wait_until="domcontentloaded")
-
-
-async def _collect_categories(page):
-    """Return all non-empty category names except root 'Books'."""
-    cats = await page.locator(".side_categories a").all_inner_texts()
-    cats = [c.strip() for c in cats if c.strip()]
-    return [c for c in cats if c.lower() != "books"]
-
-
-async def _search_async(query: str, agent: str, headless: bool = True):
-    query = (query or "").strip()
-
-    async with _browser_ctx(headless=headless) as (_b, _c, page):
-        await _goto(page, "https://books.toscrape.com/")
-        cats = await _collect_categories(page)
-
-        # List-all path (empty query or explicit "show categories" flow)
-        if not query:
-            return {
-                "status": "choices",
-                "categories": cats,
-                "message": "Available categories:",
-                "agent": agent,
-            }
-
-        # Try contains-match first
-        qlower = query.lower()
-        match = next((c for c in cats if qlower in c.lower()), None)
-
-        if not match:
-            return {
-                "status": "choices",
-                "categories": cats,
-                "message": f"No close category match for '{query}'. Pick one of the available categories.",
-                "agent": agent,
-            }
-
-        # Open matched category (fast waits)
-        await page.click(f"text={match}")
-        await page.locator(".product_pod").first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
-
-        # Grab first page items only (fast)
-        titles = await page.locator(".product_pod h3 a").all_inner_texts()
-        prices = await page.locator(".price_color").all_inner_texts()
-        items = [{"title": t.strip(), "price": p.strip()} for t, p in zip(titles, prices)]
-
-        return {
-            "status": "success",
-            "category": match,
-            "items": items,
-            "meta": f"{len(items)} items found",
-            "agent": agent,
-        }
-
-
-def search_product(query: str, agent="BroncoMCP/1.0", headless: bool = True):
+def list_categories(timeout=12) -> list[str]:
     """
-    Synchronous wrapper for Flask.
-      - Empty query => list categories
-      - Partial match => open category and list items
-      - Otherwise => return suggestions
+    Return a stable, non-empty list of category names from Books to Scrape.
+    Falls back to a small default set if parsing ever fails.
     """
-    return asyncio.run(_search_async(query, agent, headless=headless))
+    now = time.time()
+    if now - _cache["cats"]["ts"] < _CACHE_TTL and _cache["cats"]["data"]:
+        return _cache["cats"]["data"]
+
+    try:
+        resp = requests.get(f"{BASE_URL}index.html", headers={"User-Agent": CUSTOM_UA}, timeout=timeout)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cats = []
+        for a in soup.select(".side_categories ul li ul li a"):
+            name = a.get_text(strip=True)
+            if name:
+                cats.append(name)
+        if not cats:
+            raise RuntimeError("category parse produced empty list")
+        _cache["cats"] = {"ts": now, "data": cats}
+        return cats
+    except Exception:
+        # Never let the API return an empty list → keep UX stable
+        fallback = [
+            "Travel", "Mystery", "Historical Fiction", "Sequential Art",
+            "Classics", "Philosophy", "Romance", "Womens Fiction",
+            "Fiction", "Childrens",
+        ]
+        _cache["cats"] = {"ts": now, "data": fallback}
+        return fallback
 
 
-def list_categories(agent="BroncoMCP/1.0", headless: bool = True):
-    async def _list():
-        async with _browser_ctx(headless=headless) as (_b, _c, page):
-            await _goto(page, "https://books.toscrape.com/")
-            cats = await _collect_categories(page)
-            return {"status": "choices", "categories": cats, "message": "Available categories:", "agent": agent}
+def search_product(product_name: str = "music") -> dict:
+    """
+    Fixed task with input: open Books to Scrape (HTTP), navigate to the chosen
+    category, open the first book, and return title + price + meta.
+    This version keeps your Playwright flow and returns clear errors on timeouts.
+    """
+    try:
+        key = (product_name or "").strip().lower()
+        category = CATEGORY_NAMES.get(key, "Music")
+        used_default = category == "Music" and key not in ("music", "")
 
-    return asyncio.run(_list())
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(user_agent=CUSTOM_UA)
+
+            # site is HTTP, not HTTPS
+            page.goto(BASE_URL, timeout=20000)
+            page.wait_for_load_state("domcontentloaded")
+
+            # Click category link by accessible name
+            page.get_by_role("link", name=category).click(timeout=15000)
+
+            # Open first product
+            page.wait_for_selector(".product_pod", timeout=15000)
+            page.locator(".product_pod a").first.click()
+            page.wait_for_selector(".product_main h1", timeout=15000)
+
+            title = (page.text_content(".product_main h1") or "").strip()
+            price = (page.text_content(".price_color") or "").strip()
+
+            page.close()
+            browser.close()
+
+            meta = f"Category: {category}"
+            if used_default:
+                meta += " (input not recognized → defaulted to Music)"
+
+            return {"status": "success", "title": title, "price": price, "meta": meta}
+
+    except PlaywrightTimeoutError:
+        return {"status": "error", "message": "Page load timeout or element not found."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

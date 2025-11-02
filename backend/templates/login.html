@@ -1,40 +1,92 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Sign in</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sign in • Robot Driver</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="auth auth-login">
-  <main class="auth-card">
-    <h1>Sign in</h1>
-    <p class="subtle">Use your account to access search and automation.</p>
+<body>
+  <main class="container">
+    <section class="card auth-card stack" aria-labelledby="loginH">
+      <h1 id="loginH" style="margin:0">Sign in</h1>
 
-    {% with msgs = get_flashed_messages(with_categories=true) %}
-      {% if msgs %}
-        <ul class="flash">
-          {% for cat, msg in msgs %}
-            <li class="{{ cat }}">{{ msg }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
+      {# Flash messages #}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="stack" role="status" aria-live="polite">
+            {% for category, message in messages %}
+              <div class="badge {% if category == 'success' %}success{% elif category == 'error' %}error{% elif category == 'warn' %}warn{% endif %}">
+                {{ message }}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
 
-    <form method="POST" class="form" novalidate>
-      <label>Username</label>
-      <input type="text" name="username" maxlength="50" required
-             autofocus autocomplete="username" />
+      <form method="post" class="stack" autocomplete="on" novalidate>
+        <div class="stack">
+          <label for="username">Username</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            maxlength="50"
+            required
+            autocomplete="username"
+            placeholder="e.g., mon_sarder"
+          />
+          <small class="char-limit">Max 50 characters</small>
+        </div>
 
-      <label>Password</label>
-      <input type="password" name="password" maxlength="50" required
-             autocomplete="current-password" />
+        <div class="stack">
+          <label for="password">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            maxlength="50"
+            required
+            autocomplete="current-password"
+            placeholder="Your password"
+          />
+          <small class="char-limit">Max 50 characters</small>
+          <label class="inline" style="margin-top:6px">
+            <input id="togglePwd" type="checkbox" />
+            <span class="muted">Show password</span>
+          </label>
+        </div>
 
-      <button type="submit" class="btn primary mt12">Sign in</button>
-    </form>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Sign in</button>
+          <a class="button ghost" href="{{ url_for('register') }}">Create account</a>
+        </div>
 
-    <p class="muted mt8">Don’t have an account?
-      <a href="{{ url_for('register') }}">Create one</a>
-    </p>
+        <small class="muted">
+          Tip: For local testing you can use <strong>admin</strong> / <strong>admin123</strong>.
+          (Change or disable the seeding in <code>app.py</code> for production.)
+        </small>
+      </form>
+    </section>
   </main>
+
+  <script>
+    // Show/hide password
+    const togglePwd = document.getElementById('togglePwd');
+    const pwd = document.getElementById('password');
+    togglePwd.addEventListener('change', () => {
+      pwd.type = togglePwd.checked ? 'text' : 'password';
+    });
+
+    // Optional: prevent submitting if inputs exceed maxlength (belt-and-suspenders)
+    document.querySelector('form').addEventListener('submit', (e) => {
+      const u = document.getElementById('username').value || '';
+      const p = document.getElementById('password').value || '';
+      if (u.length > 50 || p.length > 50) {
+        e.preventDefault();
+        alert('Username and password must be 50 characters or fewer.');
+      }
+    });
+  </script>
 </body>
 </html>

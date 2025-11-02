@@ -1,37 +1,26 @@
 # app.py
 import os
-import time
 import sqlite3
 import traceback
+import uuid
 from datetime import timedelta
 from functools import wraps
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, flash, jsonify
+    session, flash, jsonify, g
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.exceptions import BadRequest
 from jinja2 import TemplateNotFound
 
-# Local robot driver modules
-# Expected to export:
-#   - search_product(query: str) -> dict
-#   - list_categories() -> list[str]
-try:
-    from robot_driver import search_product, list_categories  # type: ignore
-except Exception:
-    # Soft fallback to keep server booting even if driver not ready
-    def search_product(_q: str) -> dict:
-        return {
-            "status": "error",
-            "message": "robot_driver.search_product not available."
-        }
+# Try to import both: search_product (required) and list_categories (new)
+import robot_driver as rd
+from robot_driver import search_product
 
-    def list_categories() -> list:
-        return []
-
-# ── App setup ─────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# App setup
+# ──────────────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app = Flask(
     __name__,
@@ -39,51 +28,55 @@ app = Flask(
     static_folder=os.path.join(BASE_DIR, "static"),
 )
 
-# Security / session
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB
 app.permanent_session_lifetime = timedelta(minutes=30)
 
-# Simple brute-force guard if available
+DB_PATH = os.path.join(BASE_DIR, "users.db")
+MAX_CRED_LENGTH = 50
+API_KEY = os.environ.get("API_KEY", "secret123")
+
+RELAXED_CSP = os.environ.get("RELAXED_CSP", "").lower() in ("1", "true", "yes")
+
+# Optional rate limit
 try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
-
     limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
 except Exception:
     limiter = None
 
-# API key protection for machine endpoints
-API_KEY = os.environ.get("API_KEY", "secret123").strip()
 
-def api_auth_ok() -> bool:
-    # Header name chosen to be explicit and common
-    return request.headers.get("X-API-Key", "") == API_KEY
+# ──────────────────────────────────────────────────────────────────────────────
+# Headers / Trace
+# ──────────────────────────────────────────────────────────────────────────────
+def _trace_id() -> str:
+    return uuid.uuid4().hex[:12]
 
-def api_unauthorized():
-    return jsonify({"status": "error", "message": "Unauthorized"}), 401
+@app.before_request
+def _set_trace():
+    g.trace_id = _trace_id()
+    session.permanent = True
 
-# Basic security headers (relax if you embed cross origins)
 @app.after_request
 def set_secure_headers(resp):
-    # reasonable defaults; adjust CSP if needed
+    resp.headers["X-Trace-Id"] = getattr(g, "trace_id", "-")
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
-    # allow same-origin inline scripts/styles created by Flask templates
-    resp.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
-    )
+    if RELAXED_CSP:
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; "
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        )
+    else:
+        resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:;"
     return resp
 
-@app.before_request
-def make_session_permanent():
-    session.permanent = True
 
-# ── SQLite users ──────────────────────────────────────────────────────────────
-DB_PATH = os.path.join(BASE_DIR, "users.db")
-
+# ──────────────────────────────────────────────────────────────────────────────
+# DB utilities
+# ──────────────────────────────────────────────────────────────────────────────
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
@@ -96,79 +89,115 @@ def init_db():
         """)
         conn.commit()
 
-def get_user(username: str):
+def _safe_query(fn):
     try:
+        return fn()
+    except Exception as e:
+        print(f"[DB] {e}")
+        traceback.print_exc()
+        return None
+
+def get_user(username: str):
+    def _q():
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
             return cur.fetchone()
-    except Exception:
-        traceback.print_exc()
-        return None
+    return _safe_query(_q)
 
 def add_user(username: str, password_hash: str):
-    try:
+    def _q():
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
             conn.commit()
             return True
-    except Exception:
-        traceback.print_exc()
-        return False
-
-def seed_default_admin():
-    """Create default admin (admin / admin123) if not present."""
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM users WHERE username=?", ("admin",))
-            exists = cur.fetchone()[0]
-            if not exists:
-                cur.execute(
-                    "INSERT INTO users (username, password) VALUES (?, ?)",
-                    ("admin", generate_password_hash("admin123"))
-                )
-                conn.commit()
-    except Exception:
-        traceback.print_exc()
+    return _safe_query(_q)
 
 init_db()
-seed_default_admin()
 
-# ── Auth helpers ──────────────────────────────────────────────────────────────
-MAX_CRED_LENGTH = 50
 
-def too_long(value: str) -> bool:
-    return value is None or len(value) > MAX_CRED_LENGTH
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def _too_long(x: str) -> bool:
+    return x is None or len(x) > MAX_CRED_LENGTH
 
-def login_required(view_func):
-    @wraps(view_func)
+def _get_categories_safe() -> list[str]:
+    """
+    Try several possible functions in robot_driver to get categories.
+    Normalize to a list[str] so jsonify always succeeds.
+    """
+    for fn_name in ("get_categories", "list_categories", "fetch_categories"):
+        if hasattr(rd, fn_name):
+            try:
+                cats = getattr(rd, fn_name)()
+                # normalize
+                if isinstance(cats, dict) and "categories" in cats:
+                    cats = cats["categories"]
+                if isinstance(cats, (set, tuple)):
+                    cats = list(cats)
+                if not isinstance(cats, list):
+                    cats = list(cats)
+                cats = [str(c).strip() for c in cats if str(c).strip()]
+                if cats:
+                    return cats
+            except Exception as e:
+                print(f"[categories] {fn_name} failed: {e}")
+                traceback.print_exc()
+    # never return empty → caller UX stays stable
+    return [
+        "Travel", "Mystery", "Historical Fiction", "Sequential Art",
+        "Classics", "Philosophy", "Romance", "Womens Fiction",
+        "Fiction", "Childrens",
+    ]
+
+def api_or_login_required(view):
+    """
+    If X-API-Key matches, allow without session.
+    If logged in, allow.
+    Otherwise:
+      - for API paths return 401 JSON (no HTML redirect)
+      - for pages redirect to login
+    """
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        api_key = request.headers.get("X-API-Key")
+        if api_key and api_key == API_KEY:
+            return view(*args, **kwargs)
+        if "user" in session:
+            return view(*args, **kwargs)
+        if request.path.endswith(".json") or request.path.startswith("/api/"):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+        return redirect(url_for("login", next=request.full_path))
+    return wrapper
+
+def login_required(view):
+    @wraps(view)
     def wrapper(*args, **kwargs):
         if "user" not in session:
             return redirect(url_for("login", next=request.path))
-        return view_func(*args, **kwargs)
+        return view(*args, **kwargs)
     return wrapper
 
-# ── Web pages ────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes: UI navigation
+# ──────────────────────────────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    return redirect(url_for("search_page") if "user" in session else url_for("login"))
+    if "user" in session:
+        return redirect(url_for("search_page"))
+    return redirect(url_for("login"))
 
-route_login = app.route("/login", methods=["GET", "POST"])
-if limiter:
-    route_login = limiter.limit("5 per minute")(route_login)
-
-@route_login
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
-
-        if too_long(username) or too_long(password):
+        if _too_long(username) or _too_long(password):
             flash(f"Credentials exceed {MAX_CRED_LENGTH} characters.", "error")
             return render_template("login.html"), 400
-
         user = get_user(username)
         if user and check_password_hash(user[1], password):
             session["user"] = username
@@ -183,11 +212,9 @@ def register():
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         confirm  = request.form.get("confirm") or ""
-
-        if too_long(username) or too_long(password):
+        if _too_long(username) or _too_long(password):
             flash(f"Credentials exceed {MAX_CRED_LENGTH} characters.", "error")
             return render_template("register.html"), 400
-
         if not username or not password:
             flash("Please fill out all fields.", "error")
         elif get_user(username):
@@ -195,11 +222,13 @@ def register():
         elif password != confirm:
             flash("Passwords do not match.", "error")
         else:
-            if add_user(username, generate_password_hash(password)):
-                session["user"] = username
-                flash("Account created successfully!", "success")
-                return redirect(url_for("search_page"))
-            flash("Database error — please try again later.", "error")
+            pw_hash = generate_password_hash(password)
+            if not add_user(username, pw_hash):
+                flash("Database error — please try again later.", "error")
+                return render_template("register.html"), 500
+            session["user"] = username
+            flash("Account created successfully!", "success")
+            return redirect(url_for("search_page"))
     return render_template("register.html")
 
 @app.route("/logout")
@@ -208,7 +237,6 @@ def logout():
     flash("Logged out successfully.", "info")
     return redirect(url_for("login"))
 
-# ── Web search page (form flow) ───────────────────────────────────────────────
 @app.route("/search", methods=["GET", "POST"])
 @login_required
 def search_page():
@@ -221,23 +249,44 @@ def search_page():
             error = "Please type a product to search."
         else:
             try:
-                res = search_product(query)
-                if res.get("status") == "success":
-                    result = f"{res.get('title','')} — {res.get('price','')} {res.get('meta','')}"
+                data = search_product(query)
+                if data.get("status") == "success":
+                    result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
                 else:
-                    error = res.get("message", "Search failed.")
+                    error = data.get("message", "Search failed.")
             except Exception as e:
-                traceback.print_exc()
                 error = f"Search failed: {e}"
-    return render_template("search.html",
-                           username=session.get("user"),
-                           result=result, error=error, query=query)
+    return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
 
-# ── JSON APIs for SPA / MCP ───────────────────────────────────────────────────
+# Optional SPA demo (AJAX)
+@app.route("/demo")
+def demo_index():
+    return render_template("index.html")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# JSON APIs (used by MCP bridge & SPA)
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "agent": "BroncoMCP/1.0", "traceId": g.trace_id})
+
+@app.get("/categories.json")
+@api_or_login_required
+def categories_json():
+    try:
+        cats = _get_categories_safe()
+        return jsonify({"status": "ok", "categories": cats})
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"categories failed: {e}",
+            "trace": traceback.format_exc().splitlines()[-5:]
+        }), 500
+
 @app.post("/search-json")
+@api_or_login_required
 def search_json():
-    if not api_auth_ok():
-        return api_unauthorized()
     try:
         data = request.get_json(force=True)
     except BadRequest:
@@ -245,108 +294,74 @@ def search_json():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-    query = (data.get("product") or "").strip()
-    result = search_product(query)
-    return jsonify(result), 200
-
-@app.get("/categories.json")
-def categories_json():
-    if not api_auth_ok():
-        return api_unauthorized()
+    product_name = (data.get("product") or "").strip()
     try:
-        cats = list_categories() or []
-        return jsonify({
-            "status": "success",
-            "count": len(cats),
-            "categories": cats,
-            "agent": "BroncoMCP/1.0",
-            "timestamp": int(time.time())
-        }), 200
+        result = search_product(product_name)
+        return jsonify(result)
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": f"Failed to list categories: {e}"}), 500
-
-# ── Hardened /api endpoints for Claude MCP ────────────────────────────────────
-@app.get("/api/health")
-def api_health():
-    if not api_auth_ok():
-        return api_unauthorized()
-
-    payload = {
-        "status": "ok",
-        "agent": "BroncoMCP/1.0",
-        "timestamp": int(time.time()),
-        "endpoints": ["/api/run", "/categories.json", "/search-json"]
-    }
-    resp = jsonify(payload)
-    resp.headers["Cache-Control"] = "no-store"
-    return resp, 200
+        return jsonify({"status": "error", "message": f"Search failed: {e}"}), 500
 
 @app.post("/api/run")
+@api_or_login_required
 def api_run():
     """
-    Safe goal runner for Claude MCP.
-    Handles empty/malformed/missing JSON gracefully.
-    Always returns valid JSON (never 500).
+    Hardened: tolerate empty/malformed JSON; never 500 just for bad input.
     """
-    if not api_auth_ok():
-        return api_unauthorized()
+    data = request.get_json(silent=True) or {}
+    goal = (data.get("goal") or "").strip()
+    planner = (data.get("planner") or "builtin").lower()
+    if not goal:
+        return jsonify({"status": "error", "message": "Missing 'goal'"}), 400
+
+    headless = not (os.environ.get("HEADFUL", "").lower() in ("1", "true", "yes"))
 
     try:
-        data = request.get_json(force=False, silent=True)
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
+        from mcp_agent import run_ai_goal
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"mcp_agent import failed: {e}",
+            "trace": traceback.format_exc().splitlines()[-5:]
+        }), 500
 
-    goal = (data.get("goal") or "N/A").strip()
-    headless = bool(data.get("headless", True))
-    plan = data.get("plan", [])
+    try:
+        result = run_ai_goal(goal=goal, planner=planner, headless=headless)
+        if not isinstance(result, dict):
+            result = {"status": "ok", "output": str(result)}
+        result["traceId"] = g.trace_id
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"/api/run failed: {e}",
+            "trace": traceback.format_exc().splitlines()[-8:],
+            "traceId": g.trace_id,
+        }), 500
 
-    meta = {
-        "method": request.method,
-        "path": request.path,
-        "client_ip": request.remote_addr,
-        "user_agent": request.headers.get("User-Agent"),
-    }
 
-    response = {
-        "status": "accepted",
-        "agent": "BroncoMCP/1.0",
-        "goal": goal,
-        "headless": headless,
-        "plan_steps": len(plan),
-        "timestamp": int(time.time()),
-        "meta": meta,
-    }
-    resp = jsonify(response)
-    resp.headers["Cache-Control"] = "no-store"
-    resp.headers["Connection"] = "close"
-    return resp, 200
-
-# ── Error handlers ────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Friendly error pages
+# ──────────────────────────────────────────────────────────────────────────────
 @app.errorhandler(404)
 def _404(_e):
-    try:
-        return render_template("index.html"), 404
-    except TemplateNotFound:
-        return "<h3>Not found</h3>", 404
+    return render_template("index.html"), 404
 
 @app.errorhandler(500)
 def _500(_e):
-    try:
-        return render_template("index.html"), 500
-    except TemplateNotFound:
-        return "<h3>Server error</h3>", 500
+    return render_template("index.html"), 500
 
 @app.errorhandler(TemplateNotFound)
 def _template_missing(e):
     print(f"❌ Missing template: {e.name}")
-    return "<h3>Template missing on server.</h3>", 500
+    return "<h2>Template missing on server. Contact admin.</h2>", 500
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Run
+# ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
-    seed_default_admin()
-    # Host/port align with your Docker run -p 5001:5001
+    # Optional: seed a default admin once
+    if not get_user("admin"):
+        add_user("admin", generate_password_hash("admin123"))
     app.run(host="0.0.0.0", port=5001, debug=True)

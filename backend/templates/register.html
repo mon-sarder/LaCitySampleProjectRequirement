@@ -1,67 +1,139 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Create account</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Create account • Robot Driver</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="auth auth-register">
-  <main class="auth-card">
-    <h1>Create your account</h1>
-    <p class="subtle">Pick a username and a strong password.</p>
+<body>
+  <main class="container">
+    <section class="card auth-card stack" aria-labelledby="regH">
+      <h1 id="regH" style="margin:0">Create account</h1>
 
-    {% with msgs = get_flashed_messages(with_categories=true) %}
-      {% if msgs %}
-        <ul class="flash">
-          {% for cat, msg in msgs %}
-            <li class="{{ cat }}">{{ msg }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
+      {# Flash messages #}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="stack" role="status" aria-live="polite">
+            {% for category, message in messages %}
+              <div class="badge {% if category == 'success' %}success{% elif category == 'error' %}error{% elif category == 'warn' %}warn{% endif %}">
+                {{ message }}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
 
-    <form method="POST" class="form" id="regForm" novalidate>
-      <label>Username</label>
-      <input type="text" name="username" maxlength="50"
-             value="{{ username or '' }}" required autocomplete="username" />
-
-      <div class="row">
-        <div class="col">
-          <label>Password</label>
-          <input id="pw" type="password" name="password" maxlength="50"
-                 required autocomplete="new-password" />
+      <form id="regForm" method="post" class="stack" autocomplete="off" novalidate>
+        <div class="stack">
+          <label for="username">Username</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            maxlength="50"
+            required
+            autocomplete="username"
+            placeholder="Choose a username"
+          />
+          <small class="char-limit">Max 50 characters</small>
         </div>
-        <div class="col">
-          <label>Confirm password</label>
-          <input id="pw2" type="password" name="confirm" maxlength="50"
-                 required autocomplete="new-password" />
+
+        <div class="stack">
+          <label for="password">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            maxlength="50"
+            required
+            autocomplete="new-password"
+            placeholder="Create a password"
+          />
+          <small class="char-limit">Max 50 characters</small>
         </div>
-      </div>
 
-      <div id="pwHint" class="hint muted mt8">Passwords must match.</div>
+        <div class="stack">
+          <label for="confirm">Confirm password</label>
+          <input
+            id="confirm"
+            name="confirm"
+            type="password"
+            maxlength="50"
+            required
+            autocomplete="new-password"
+            placeholder="Re-enter your password"
+          />
+          <small id="matchHint" class="hint muted">Both passwords must match.</small>
+          <label class="inline" style="margin-top:6px">
+            <input id="togglePwd" type="checkbox" />
+            <span class="muted">Show passwords</span>
+          </label>
+        </div>
 
-      <button type="submit" class="btn accent mt12" id="submitBtn">Create account</button>
-    </form>
-
-    <p class="muted mt8">Already have an account?
-      <a href="{{ url_for('login') }}">Sign in</a>
-    </p>
+        <div class="auth-actions">
+          <button id="submitBtn" type="submit" class="primary">Create account</button>
+          <a class="button ghost" href="{{ url_for('login') }}">Back to sign in</a>
+        </div>
+      </form>
+    </section>
   </main>
 
   <script>
-    // live password match feedback
-    const pw  = document.getElementById('pw');
-    const pw2 = document.getElementById('pw2');
-    const hint = document.getElementById('pwHint');
-    const submit = document.getElementById('submitBtn');
-    function check() {
-      const a = pw.value, b = pw2.value;
-      if (!a || !b) { hint.textContent="Passwords must match."; hint.className="hint muted mt8"; submit.disabled=false; return; }
-      if (a === b) { hint.textContent="✅ Passwords match"; hint.className="hint ok mt8"; submit.disabled=false; }
-      else { hint.textContent="❌ Passwords do not match"; hint.className="hint err mt8"; submit.disabled=true; }
+    // Show/hide both password fields
+    const togglePwd = document.getElementById('togglePwd');
+    const pwd = document.getElementById('password');
+    const conf = document.getElementById('confirm');
+    togglePwd.addEventListener('change', () => {
+      const type = togglePwd.checked ? 'text' : 'password';
+      pwd.type = type;
+      conf.type = type;
+    });
+
+    // Client-side match check (helpful, server still enforces)
+    const matchHint = document.getElementById('matchHint');
+    const submitBtn = document.getElementById('submitBtn');
+    function checkMatch() {
+      const p = pwd.value || '';
+      const c = conf.value || '';
+      const tooLong = p.length > 50 || c.length > 50;
+      const mismatch = p && c && p !== c;
+      let msg = 'Both passwords must match.';
+      let ok = true;
+
+      if (tooLong) {
+        msg = 'Password fields must be 50 characters or fewer.';
+        ok = false;
+      } else if (mismatch) {
+        msg = 'Passwords do not match.';
+        ok = false;
+      }
+      matchHint.textContent = msg;
+      matchHint.classList.toggle('err', !ok);
+      matchHint.classList.toggle('muted', ok);
+      submitBtn.disabled = !ok;
     }
-    pw.addEventListener('input', check);
-    pw2.addEventListener('input', check);
+    pwd.addEventListener('input', checkMatch);
+    conf.addEventListener('input', checkMatch);
+
+    // Hard-stop if someone exceeds maxlength (belt-and-suspenders)
+    document.getElementById('regForm').addEventListener('submit', (e) => {
+      const u = document.getElementById('username').value || '';
+      const p = pwd.value || '';
+      const c = conf.value || '';
+      if (u.length > 50 || p.length > 50 || c.length > 50) {
+        e.preventDefault();
+        alert('Username and passwords must be 50 characters or fewer.');
+        return;
+      }
+      if (p !== c) {
+        e.preventDefault();
+        alert('Passwords do not match.');
+      }
+    });
+
+    // Initialize button state on load
+    checkMatch();
   </script>
 </body>
 </html>

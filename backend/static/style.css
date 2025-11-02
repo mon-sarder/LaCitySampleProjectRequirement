@@ -1,210 +1,380 @@
-/* === Base Reset === */
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* ==========================================================================
+   Global Theme
+   ========================================================================== */
+:root {
+  --bg: #ffffff;
+  --fg: #111111;
+  --fg-muted: #666666;
+  --border: #e9e9e9;
+  --border-strong: #dddddd;
+  --accent: #0a63ff;
+  --accent-ink: #ffffff;
+  --success: #0a7f2e;
+  --danger: #b00020;
+  --warn: #c17b00;
+
+  --card-bg: #ffffff;
+  --chip-bg: #fafafa;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 8px 30px rgba(0,0,0,0.06);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --gap-xs: 6px;
+  --gap-sm: 10px;
+  --gap: 12px;
+  --gap-lg: 20px;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
+
+* { box-sizing: border-box; }
+
 html, body {
   height: 100%;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-  color: #0f172a;
 }
 
-/* === Authentication Pages === */
-.auth {
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Login background */
-.auth-login {
-  background: linear-gradient(145deg, #f0f4ff 0%, #e8edff 50%, #f7f9ff 100%);
+/* Links */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
 }
 
-/* Register background */
-.auth-register {
-  background: radial-gradient(circle at top left, #fff2f0, #ffe7e1 40%, #fff 80%);
+/* ==========================================================================
+   Layout
+   ========================================================================== */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 16px;
 }
 
-/* Card Container */
-.auth-card {
-  width: min(480px, 90vw);
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
-  padding: 32px 28px;
-}
-.auth-card h1 {
-  margin-bottom: 8px;
-  font-size: 26px;
+header h1 {
+  font-size: 18px;
   font-weight: 700;
-}
-.subtle {
-  color: #64748b;
-  margin-bottom: 14px;
+  margin: 0 16px 0 0;
 }
 
-/* === Flash Messages === */
-.flash {
-  list-style: none;
-  margin-bottom: 12px;
-}
-.flash li {
-  padding: 8px 12px;
-  border-radius: 8px;
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-.flash.success {
-  background: #ecfdf5;
-  color: #065f46;
-}
-.flash.error {
-  background: #fef2f2;
-  color: #991b1b;
-}
-.flash.info {
-  background: #eff6ff;
-  color: #1e3a8a;
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 16px;
 }
 
-/* === Forms === */
-.form {
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+}
+
+/* Stacks (vertical spacing) */
+.stack {
   display: grid;
-  gap: 12px;
+  gap: var(--gap-sm);
 }
-.form label {
+
+/* Cards */
+.card {
+  flex: 1 1 320px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Utility */
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hidden { display: none !important; }
+
+.muted { color: var(--fg-muted); }
+.ok    { color: var(--success); }
+.err   { color: var(--danger); }
+
+/* ==========================================================================
+   Forms & Inputs
+   ========================================================================== */
+label {
+  font-size: 13px;
   font-weight: 600;
-  color: #1e293b;
-  margin-top: 4px;
 }
+
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+input[type="email"] {
   width: 100%;
   padding: 10px 12px;
-  font-size: 15px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: #fff;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: box-shadow .15s ease, border-color .15s ease;
 }
+
 input[type="text"]:focus,
-input[type="password"]:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+input[type="password"]:focus,
+input[type="email"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10,99,255,0.12);
 }
 
-/* === Buttons === */
-.btn {
-  padding: 10px 16px;
-  font-weight: 600;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.15s ease-in-out;
-}
-.btn.primary {
-  background: #2563eb;
-  color: #ffffff;
-}
-.btn.primary:hover {
-  background: #1d4ed8;
-}
-.btn.accent {
-  background: #ef4444;
-  color: #ffffff;
-}
-.btn.accent:hover {
-  background: #dc2626;
-}
-
-/* === Utility Classes === */
-.muted {
-  color: #64748b;
-}
-.mt8 {
-  margin-top: 8px;
-}
-.mt12 {
-  margin-top: 12px;
-}
-
-/* === Form Row Layout (Register Page) === */
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.col {
-  display: grid;
-  gap: 6px;
-}
-
-/* === Password Hint Feedback === */
+/* Optional small hint (e.g., "Max 50 characters") */
 .hint {
-  font-size: 13px;
-}
-.hint.ok {
-  color: #15803d;
-}
-.hint.err {
-  color: #b91c1c;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
-/* === Search Page Styling === */
-.search-container {
-  display: grid;
-  justify-content: center;
-  align-content: start;
-  min-height: 100vh;
-  background: #f8fafc;
-  padding: 32px;
+/* Character limit helper (use with a <small class="char-limit">Max 50 chars</small>) */
+.char-limit {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: -4px;
 }
-.search-container h1 {
-  text-align: center;
-  margin-bottom: 24px;
-  color: #0f172a;
-}
-.search-container form {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  margin-bottom: 16px;
-}
-.search-container input[type="text"] {
-  width: 300px;
-}
-.search-container button {
-  background: #2563eb;
-  color: white;
-  border: none;
-  padding: 10px 16px;
-  border-radius: 6px;
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+button,
+.button {
+  appearance: none;
+  -webkit-appearance: none;
   cursor: pointer;
-}
-.search-container button:hover {
-  background: #1d4ed8;
+  border: 1px solid var(--border-strong);
+  background: #f6f7f8;
+  color: var(--fg);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  transition: background .15s ease, transform .02s ease;
 }
 
-/* === Category List (Search Results) === */
+button:hover,
+.button:hover {
+  background: #f0f1f2;
+}
+
+button:active,
+.button:active {
+  transform: translateY(1px);
+}
+
+button.primary,
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: var(--border);
+}
+
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+}
+
+/* Danger type (optional) */
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* ==========================================================================
+   Chips (Categories)
+   ========================================================================== */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--fg);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .02s ease;
+}
+
+.chip:hover {
+  background: #f0f0f0;
+  border-color: var(--border);
+}
+
+.chip:active {
+  transform: translateY(1px);
+}
+
+/* Optionally used elsewhere */
 .category-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  justify-content: center;
-  margin-top: 20px;
+  gap: 8px;
 }
 .category-list a {
-  background: #e0e7ff;
-  color: #1e3a8a;
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--chip-bg);
+  color: var(--fg);
   text-decoration: none;
-  padding: 8px 14px;
-  border-radius: 6px;
-  font-weight: 500;
-  transition: all 0.2s ease;
+  font-size: 13px;
 }
 .category-list a:hover {
-  background: #c7d2fe;
+  background: #f0f0f0;
+}
+
+/* ==========================================================================
+   Code Blocks / Pre
+   ========================================================================== */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+pre {
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  overflow: auto;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ==========================================================================
+   Alerts / Badges (optional)
+   ========================================================================== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: #f8f9fb;
+  color: var(--fg-muted);
+}
+
+.badge.success {
+  color: var(--success);
+  border-color: rgba(10,127,46,0.2);
+  background: rgba(10,127,46,0.06);
+}
+
+.badge.error {
+  color: var(--danger);
+  border-color: rgba(176,0,32,0.2);
+  background: rgba(176,0,32,0.06);
+}
+
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(193,123,0,0.25);
+  background: rgba(193,123,0,0.07);
+}
+
+/* ==========================================================================
+   Auth Pages (login/register) — optional helpers
+   ========================================================================== */
+.auth-card {
+  max-width: 420px;
+  margin: 48px auto;
+  padding: 20px;
+}
+
+.auth-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+}
+
+/* ==========================================================================
+   Search Page
+   ========================================================================== */
+.search-form {
+  display: grid;
+  gap: var(--gap-sm);
+}
+
+.search-status {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+@media (max-width: 720px) {
+  .container { padding: 12px; }
+  header { padding: 12px; }
+  .card { padding: 14px; }
+}
+
+/* ==========================================================================
+   Dark Mode (optional if user toggles prefers-color-scheme)
+   ========================================================================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0c0f;
+    --fg: #f1f1f1;
+    --fg-muted: #a3a3a3;
+    --border: #1c1f26;
+    --border-strong: #2a2f3a;
+    --card-bg: #0f1116;
+    --chip-bg: #12151c;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-md: 0 10px 30px rgba(0,0,0,0.45);
+  }
+
+  body { background: var(--bg); color: var(--fg); }
+  pre { background: #0f1218; border-color: var(--border-strong); }
+  input[type="text"],
+  input[type="password"],
+  input[type="email"] {
+    background: #0f1216;
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  button { background: #151922; border-color: var(--border-strong); color: var(--fg); }
+  button:hover { background: #1a2030; }
+  .chip { background: #141824; border-color: var(--border-strong); }
+  .chip:hover { background: #182031; }
 }
