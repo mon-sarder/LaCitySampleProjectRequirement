@@ -1,232 +1,248 @@
 # robot_driver.py
-# Robust Playwright scraper for "Books to Scrape"
-# - Defensive against layout/timeout issues
-# - Always returns a stable JSON shape for the API
-# - Fuzzy matches category; returns categories when no match
-#
-# Public functions:
-#   - search_product(category: str, limit: int | None = None) -> dict
-#   - list_categories() -> list[dict]  (name, url)
+"""
+Robot driver for Books to Scrape.
+
+Stable response contract for search_product():
+{
+  "agent": "BroncoMCP/1.0",
+  "status": "success" | "error",
+  "category": "<resolved category name>",
+  "items": [ {"title": "...", "price": "£..."} ],
+  "meta": {
+      "count": <int>,
+      "category_url": "<url or null>",
+      "categories": ["Travel","Mystery",...],   # included when user’s query didn’t closely match a category
+      "note": "<optional string>"               # optional diagnostic info
+  }
+}
+
+Behavior:
+- Fuzzy-matches the user query against site categories.
+- If no close match, returns ALL categories in meta.categories and an empty items list.
+- Paginates a category to collect items (respects optional 'limit').
+- Always returns items as a list (even if only one item).
+"""
 
 from __future__ import annotations
 
-import os
 import re
-import difflib
-from typing import List, Dict, Any, Tuple, Optional
+import time
+from typing import List, Dict, Optional, Tuple
+from difflib import get_close_matches
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
-
-BOOKS_BASE = "http://books.toscrape.com/"
+BOOKS_ROOT = "https://books.toscrape.com/"
 AGENT_NAME = "BroncoMCP/1.0"
 
-# --- Speed & behavior tuners (override via env) -------------------------------
-HEADLESS = os.environ.get("PW_HEADLESS", "1").lower() in ("1", "true", "yes")
-NAV_TIMEOUT_MS = int(os.environ.get("PW_NAV_TIMEOUT_MS", "15000"))
-SLOWMO_MS = int(os.environ.get("PW_SLOWMO_MS", "0"))
-CUSTOM_UA = os.environ.get(
-    "CUSTOM_UA",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-)
-
-# -----------------------------------------------------------------------------
+# Tunables
+NAV_TIMEOUT_MS = 15000
+REQ_TIMEOUT_MS = 15000
+PAGINATION_MAX_PAGES = 50  # hard safety cap
 
 
-def _normalize(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip().lower())
+def _clean_text(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
 
 
-def _launch_browser():
-    """Launch Chromium with hardened defaults."""
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(headless=HEADLESS, slow_mo=SLOWMO_MS)
-    context = browser.new_context(user_agent=CUSTOM_UA, viewport={"width": 1280, "height": 900})
-    page = context.new_page()
-    page.set_default_timeout(NAV_TIMEOUT_MS)
-    return pw, browser, context, page
+def _abs_url(href: str) -> str:
+    if href.startswith("http"):
+        return href
+    if href.startswith("./"):
+        href = href[2:]
+    return BOOKS_ROOT + href
 
 
-def _extract_categories(page) -> List[Dict[str, str]]:
+def _get_categories(page) -> List[Tuple[str, str]]:
     """
-    Returns a list of categories from the home page:
-    [{"name": "Travel", "url": "http://.../category/books/travel_2/index.html"}, ...]
+    Returns list of (category_name, category_url).
     """
-    page.goto(BOOKS_BASE)
-    cats: List[Dict[str, str]] = []
-    # Categories live under the left sidebar list:
-    # ul.nav-list > li > ul > li > a
-    anchors = page.locator("ul.nav-list ul li a")
-    count = anchors.count()
-    for i in range(count):
-        a = anchors.nth(i)
-        name = _normalize(a.inner_text())
+    categories: List[Tuple[str, str]] = []
+    # Sidebar list
+    for a in page.locator(".nav-list ul li a").all():
+        name = _clean_text(a.inner_text())
         href = a.get_attribute("href") or ""
-        if not href.startswith("http"):
-            href = BOOKS_BASE + href.lstrip("/")
-        # Re-titleize the name for display
-        title = name.title()
-        cats.append({"name": title, "url": href})
-    return cats
+        if not name:
+            continue
+        categories.append((name, _abs_url(href)))
+    return categories
 
 
-def _best_category_url(categories: List[Dict[str, str]], query: str) -> Optional[str]:
-    """Pick the closest category URL by fuzzy matching on name."""
-    if not categories:
+def _closest_category(query: str, categories: List[Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+    names = [name for name, _ in categories]
+    if not query:
         return None
-    q = _normalize(query)
-    names = [c["name"] for c in categories]  # already title-ized
-    # make a map from lower -> original
-    low_to_cat = {c["name"].lower(): c for c in categories}
-    # difflib returns a list of best textual matches
-    best = difflib.get_close_matches(q, [n.lower() for n in names], n=1, cutoff=0.6)
-    if not best:
+    matches = get_close_matches(query.lower(), [n.lower() for n in names], n=1, cutoff=0.65)
+    if not matches:
         return None
-    return low_to_cat[best[0]]["url"]
+    target_lower = matches[0]
+    for (name, url) in categories:
+        if name.lower() == target_lower:
+            return (name, url)
+    return None
 
 
-def _scrape_category_items(page, cat_url: str, limit: int | None = None) -> List[Dict[str, Any]]:
+def _extract_items_from_category(page, limit: Optional[int]) -> List[Dict[str, str]]:
     """
-    Scrape a category page for product pods (title + price).
+    Iterates all pages of a category; collects book title and price.
+    Respects 'limit' if provided.
     """
-    page.goto(cat_url)
+    items: List[Dict[str, str]] = []
 
-    # Items are in 'ol.row li article.product_pod'
-    pods = page.locator("ol.row li article.product_pod")
-    count = pods.count()
-    items: List[Dict[str, Any]] = []
-    for i in range(count):
-        art = pods.nth(i)
-        # Title is in h3 > a[title], fallback to text
-        title_attr = art.locator("h3 a").get_attribute("title") or ""
-        if not title_attr:
-            title_attr = art.locator("h3 a").inner_text()
-        title = title_attr.strip()
+    def scrape_current_page():
+        cards = page.locator(".product_pod")
+        count = cards.count()
+        for i in range(count):
+            card = cards.nth(i)
+            title = _clean_text(card.locator("h3 a").get_attribute("title") or "")
+            price = _clean_text(card.locator(".price_color").inner_text())
+            if title:
+                items.append({"title": title, "price": price})
+            if limit is not None and len(items) >= limit:
+                return True
+        return False
 
-        price_txt = (art.locator(".price_color").inner_text() or "").strip()
-        # e.g. "£45.17" – keep as text (UI formats)
-        items.append({"title": title, "price": price_txt})
+    # First page
+    if scrape_current_page():
+        return items
 
-        if limit and len(items) >= limit:
+    # Pagination
+    pages_seen = 1
+    while pages_seen < PAGINATION_MAX_PAGES:
+        next_link = page.locator("li.next a")
+        if next_link.count() == 0:
             break
+        next_href = next_link.get_attribute("href") or ""
+        if not next_href:
+            break
+        # Click/Go to next page
+        try:
+            next_link.click(timeout=REQ_TIMEOUT_MS)
+            page.wait_for_selector(".product_pod", timeout=REQ_TIMEOUT_MS)
+        except PWTimeoutError:
+            break
+
+        pages_seen += 1
+        if scrape_current_page():
+            break
+
     return items
 
 
-def list_categories() -> List[Dict[str, str]]:
-    """Convenience function to fetch categories (used by /categories.json and MCP)."""
-    pw, browser, context, page = _launch_browser()
-    try:
-        cats = _extract_categories(page)
-        return cats
-    finally:
+def search_product(product: str, limit: Optional[int] = None) -> Dict:
+    """
+    High-level search entry:
+      - Resolve the category from 'product' (fuzzy).
+      - If no close match, return meta.categories and no items.
+      - Else, scrape that category and return items.
+
+    Returns the canonical response dict described at the top of the file.
+    """
+    query = (product or "").strip()
+    if limit is not None:
         try:
-            context.close()
-            browser.close()
-            pw.stop()
+            limit = int(limit)
+            if limit <= 0:
+                limit = None
         except Exception:
-            pass
+            limit = None
 
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
+        context = browser.new_context(user_agent="Mozilla/5.0 BroncoMCP")
+        page = context.new_page()
 
-def search_product(category: str, limit: int | None = None, headless: Optional[bool] = None) -> Dict[str, Any]:
-    """
-    Main entrypoint used by Flask /search-json and MCP.
-
-    Returns dict:
-    {
-      "agent": "BroncoMCP/1.0",
-      "status": "success" | "no_match" | "error",
-      "category": "<normalized-requested>",
-      "items": [ {title, price}, ... ],
-      "meta": { "categories": [ {name,url},... ] }
-    }
-    """
-    requested = (category or "").strip()
-    normalized = requested or ""
-
-    # Optional override for headless at call time
-    if headless is not None:
-        # override module-level HEADLESS just for this call
-        os.environ["PW_HEADLESS"] = "1" if headless else "0"
-
-    pw, browser, context, page = _launch_browser()
-    try:
-        # 1) Gather categories up front (so we can return them on no-match)
-        cats = _extract_categories(page)
-
-        # 2) Find best category
-        best_url = _best_category_url(cats, normalized)
-        if not normalized or normalized.lower() in ("*", "all", "everything"):
-            # treat as "list everything" request: send back categories only
+        # Defensive navigation to root
+        try:
+            page.goto(BOOKS_ROOT, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        except PWTimeoutError:
+            browser.close()
             return {
                 "agent": AGENT_NAME,
-                "status": "no_match",
-                "category": normalized,
+                "status": "error",
+                "category": query,
                 "items": [],
-                "meta": {"categories": cats}
+                "meta": {"note": "Timeout navigating to site root"}
             }
 
-        if not best_url:
-            # No close match – tell UI to show categories to click
+        # Grab categories
+        try:
+            page.wait_for_selector(".nav-list ul li a", timeout=REQ_TIMEOUT_MS)
+            categories = _get_categories(page)
+        except PWTimeoutError:
+            browser.close()
             return {
                 "agent": AGENT_NAME,
-                "status": "no_match",
-                "category": normalized,
+                "status": "error",
+                "category": query,
                 "items": [],
-                "meta": {"categories": cats}
+                "meta": {"note": "Could not load categories"}
             }
 
-        # 3) Scrape items for that category
-        items = _scrape_category_items(page, best_url, limit=limit)
+        # No or bad query -> offer the catalog so the caller can pick
+        if not query:
+            browser.close()
+            return {
+                "agent": AGENT_NAME,
+                "status": "success",
+                "category": "",
+                "items": [],
+                "meta": {
+                    "categories": [name for (name, _) in categories],
+                    "count": 0,
+                    "category_url": None,
+                    "note": "No query provided; listing categories"
+                }
+            }
 
-        # Defensive: force list
-        if isinstance(items, dict):
-            items = [items]
-        elif not isinstance(items, list):
-            items = []
+        # Find closest category
+        resolved = _closest_category(query, categories)
+        if not resolved:
+            browser.close()
+            return {
+                "agent": AGENT_NAME,
+                "status": "success",
+                "category": query,
+                "items": [],
+                "meta": {
+                    "categories": [name for (name, _) in categories],
+                    "count": 0,
+                    "category_url": None,
+                    "note": "No close category match; choose from 'categories'"
+                }
+            }
+
+        resolved_name, resolved_url = resolved
+
+        # Navigate to the category
+        try:
+            page.goto(resolved_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_selector(".product_pod", timeout=REQ_TIMEOUT_MS)
+        except PWTimeoutError:
+            browser.close()
+            return {
+                "agent": AGENT_NAME,
+                "status": "error",
+                "category": resolved_name,
+                "items": [],
+                "meta": {
+                    "count": 0,
+                    "category_url": resolved_url,
+                    "note": "Timeout navigating category page"
+                }
+            }
+
+        # Extract items with pagination
+        items = _extract_items_from_category(page, limit=limit)
+        browser.close()
 
         return {
             "agent": AGENT_NAME,
             "status": "success",
-            "category": normalized,
+            "category": resolved_name,
             "items": items,
             "meta": {
-                "categories": cats,
-                "category_url": best_url,
-                "count": len(items)
+                "count": len(items),
+                "category_url": resolved_url
             }
         }
-
-    except Exception as e:
-        # Fail safe: return a well-formed error body (items = [])
-        return {
-            "agent": AGENT_NAME,
-            "status": "error",
-            "category": normalized,
-            "message": str(e),
-            "items": [],
-            "meta": {"note": "scraper failure; returned empty list"}
-        }
-    finally:
-        try:
-            context.close()
-            browser.close()
-            pw.stop()
-        except Exception:
-            pass
-
-
-# If you want a quick local test:
-if __name__ == "__main__":
-    # Example: python robot_driver.py
-    from pprint import pprint
-
-    print("== Categories ==")
-    try:
-        pprint(list_categories()[:10])
-    except Exception as e:
-        print("Categories error:", e)
-
-    print("\n== Search: 'travel' (top 5) ==")
-    res = search_product("travel", limit=5)
-    pprint(res)
