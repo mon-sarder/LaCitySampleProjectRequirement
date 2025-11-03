@@ -14,8 +14,8 @@ from werkzeug.exceptions import BadRequest
 from jinja2 import TemplateNotFound
 
 # Local drivers
-from robot_driver import search_product           # Playwright product bot
-from login_driver import run_login_test           # Playwright demo-login bot
+from robot_driver import search_product  # Playwright product bot
+from login_driver import run_login_test  # Playwright demo-login bot
 
 # ------------------------------------------------------------------------------
 # App setup
@@ -41,7 +41,7 @@ REQUIRED_API_KEY = os.environ.get("API_KEY")  # e.g., 'secret123'
 RELAXED_CSP = os.environ.get("RELAXED_CSP") in ("1", "true", "True")
 
 # Default admin seed (local only)
-SEED_ADMIN = os.environ.get("ADMIN_DEFAULT") in ("1", "true", "True")
+SEED_ADMIN = os.environ.get("ADMIN_DEFAULT", "1") in ("1", "true", "True")
 
 # Speed & UA (used by playbook runs)
 CUSTOM_UA = (
@@ -56,6 +56,7 @@ CUSTOM_UA = (
 try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
+
     limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
 except Exception:
     limiter = None
@@ -74,7 +75,7 @@ def set_secure_headers(resp):
         # relaxed for local MCP/automation
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; "
-            "img-src 'self' data:; connect-src 'self' http://localhost:*/ http://127.0.0.1:*;"
+            "img-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:*;"
         )
     else:
         # safer for normal runs
@@ -116,7 +117,7 @@ def _normalize_search_payload(raw: dict, requested_category: str) -> dict:
     title = raw.get("title")
     price = raw.get("price")
     status = raw.get("status", "success")
-    agent  = raw.get("agent", "BroncoMCP/1.0")
+    agent = raw.get("agent", "BroncoMCP/1.0")
 
     # If we have a single item, wrap it into a list
     if title:
@@ -140,17 +141,23 @@ def _normalize_search_payload(raw: dict, requested_category: str) -> dict:
         "meta": meta_out | {"normalized": True}
     }
 
+
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
-            )
-        """)
-        conn.commit()
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+        print(f"✅ Database initialized: {DB_PATH}")
+    except Exception as e:
+        print(f"❌ Database init failed: {e}")
+        traceback.print_exc()
 
 
 def _safe_query(fn):
@@ -172,6 +179,7 @@ def get_user(username: str):
             cur = conn.cursor()
             cur.execute("SELECT username, password FROM users WHERE username = ?", (username,))
             return cur.fetchone()
+
     return _safe_query(_q)
 
 
@@ -182,32 +190,30 @@ def add_user(username: str, password_hash: str):
             cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
             conn.commit()
             return True
+
     return _safe_query(_q)
 
 
 def ensure_default_admin():
     """
-    Local dev helper: seed an admin/admin123! account if ADMIN_DEFAULT=1.
+    Local dev helper: seed an admin/admin123 account if ADMIN_DEFAULT=1.
     """
     if not SEED_ADMIN:
         return
     admin = get_user("admin")
     if not admin:
         try:
-            add_user("admin", generate_password_hash("admin123!"))
-            app.logger.info("Seeded default admin user: admin / admin123!")
+            add_user("admin", generate_password_hash("admin123"))
+            print("✅ Seeded default admin user: admin / admin123")
         except Exception as e:
-            app.logger.warning(f"Failed to seed admin: {e}")
-
-
-init_db()
-ensure_default_admin()
+            print(f"⚠️ Failed to seed admin: {e}")
 
 
 # ------------------------------------------------------------------------------
 # Auth utilities
 # ------------------------------------------------------------------------------
 MAX_CRED_LENGTH = 50
+
 
 def _too_long(x: str) -> bool:
     return x is None or len(x) > MAX_CRED_LENGTH
@@ -219,6 +225,7 @@ def login_required(view_func):
         if "user" not in session:
             return redirect(url_for("login", next=request.path))
         return view_func(*args, **kwargs)
+
     return wrapper
 
 
@@ -247,6 +254,7 @@ def home():
 route_login = app.route("/login", methods=["GET", "POST"])
 if limiter:
     route_login = limiter.limit("5 per minute")(route_login)
+
 
 @route_login
 def login():
@@ -277,7 +285,7 @@ def register():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
-        confirm  = request.form.get("confirm") or ""
+        confirm = request.form.get("confirm") or ""
 
         if _too_long(username) or _too_long(password):
             flash(f"Credentials exceed {MAX_CRED_LENGTH} characters.", "error")
@@ -326,12 +334,29 @@ def search_page():
             try:
                 data = search_product(query)
                 if data.get("status") == "success":
-                    result = f"{data['title']} — {data['price']} ({data.get('meta','')})"
+                    # Format multiple items
+                    items = data.get("items", [])
+                    if items:
+                        result = f"Found {len(items)} items in {data.get('category', 'category')}:\n"
+                        for item in items[:5]:  # Show first 5
+                            result += f"  • {item.get('title')} — {item.get('price')}\n"
+                    else:
+                        result = "No items found."
                 else:
                     error = data.get("message", "Search failed.")
             except Exception as e:
                 error = f"Search failed: {e}"
     return render_template("search.html", username=session.get("user"), result=result, error=error, query=query)
+
+
+# NEW ROUTE: Demo console (the index.html page)
+@app.route("/demo")
+@login_required
+def demo_index():
+    """
+    Serves the demo console (index.html) - the AJAX interface
+    """
+    return render_template("index.html")
 
 
 # ------------------------------------------------------------------------------
@@ -347,10 +372,7 @@ def categories_json():
     if not auth_or_api_key_ok():
         return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
-    # Reuse robot_driver’s fast category fetcher if you added one there;
-    # otherwise, implement a minimal one here using Playwright or requests.
     try:
-        # We’ll reuse robot_driver.search_product("") trick to load home and extract categories
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -402,7 +424,6 @@ def search_json():
 
     # --- Call your scraper ---
     try:
-        from robot_driver import search_product  # local import to avoid import cost on boot
         data = search_product(category)
 
         # Normalize the shape we expect
@@ -467,7 +488,7 @@ def login_test():
 
 
 # ------------------------------------------------------------------------------
-# MCP “AI Brain” / health endpoints
+# MCP "AI Brain" / health endpoints
 # ------------------------------------------------------------------------------
 
 @app.route("/api/health", methods=["GET"])
@@ -604,12 +625,13 @@ def api_run():
 # ------------------------------------------------------------------------------
 @app.errorhandler(404)
 def _404(_e):
-    # For SPA demo you could render index.html here; we prefer login redirect.
     return render_template("login.html"), 404
+
 
 @app.errorhandler(500)
 def _500(_e):
     return render_template("login.html"), 500
+
 
 @app.errorhandler(TemplateNotFound)
 def _template_missing(e):
@@ -621,6 +643,18 @@ def _template_missing(e):
 # Run app
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
+    print("\n🚀 Starting Robot Driver API...")
+    print(f"📁 Base directory: {BASE_DIR}")
+    print(f"🗄️  Database: {DB_PATH}")
+    print(f"🔐 Admin seeding: {'ENABLED' if SEED_ADMIN else 'DISABLED'}")
+    print(f"🔑 API Key required: {'YES' if REQUIRED_API_KEY else 'NO'}")
+    print("-" * 50)
+
     init_db()
     ensure_default_admin()
+
+    print("\n✅ Server ready!")
+    print("📍 Access at: http://localhost:5001")
+    print("🔓 Login with: admin / admin123\n")
+
     app.run(host="0.0.0.0", port=5001, debug=True)
