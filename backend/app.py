@@ -92,6 +92,54 @@ def make_session_permanent():
 # ------------------------------------------------------------------------------
 # DB Helpers
 # ------------------------------------------------------------------------------
+
+def _normalize_search_payload(raw: dict, requested_category: str) -> dict:
+    """
+    Ensure the /search-json response always returns the new shape:
+      { agent, status, category, items: [..], meta: {...} }
+    If the old shape appears (single top-level title/price), coerce it.
+    """
+    if not isinstance(raw, dict):
+        return {
+            "agent": "BroncoMCP/1.0",
+            "status": "error",
+            "category": requested_category,
+            "items": [],
+            "meta": {"note": "Non-dict payload from driver; normalized to empty list"}
+        }
+
+    # If it already has "items" and it's a list, just pass through
+    if isinstance(raw.get("items"), list):
+        return raw
+
+    # Legacy/flat shape: title/price/meta (string)
+    title = raw.get("title")
+    price = raw.get("price")
+    status = raw.get("status", "success")
+    agent  = raw.get("agent", "BroncoMCP/1.0")
+
+    # If we have a single item, wrap it into a list
+    if title:
+        items = [{"title": title, "price": price}]
+    else:
+        items = []
+
+    # Try to convert meta when it's a string like "Category: Travel"
+    meta = raw.get("meta")
+    meta_out = {}
+    if isinstance(meta, dict):
+        meta_out = meta
+    elif isinstance(meta, str):
+        meta_out = {"legacy_meta": meta}
+
+    return {
+        "agent": agent,
+        "status": status,
+        "category": raw.get("category") or requested_category,
+        "items": items,
+        "meta": meta_out | {"normalized": True}
+    }
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
