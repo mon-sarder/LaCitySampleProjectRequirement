@@ -153,7 +153,7 @@ def search_product(product: str, limit: int = 10) -> dict:
                 "agent": AGENT_NAME,
                 "status": "error",
                 "category": category_query,
-                "items": [],
+                "items": [1],
                 "meta": {"note": "Timeout during navigation or scraping"}
             }
         finally:
