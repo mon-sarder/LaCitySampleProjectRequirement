@@ -657,4 +657,5 @@ if __name__ == "__main__":
     print("📍 Access at: http://localhost:5001")
     print("🔓 Login with: admin / admin123\n")
 
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # Use threaded mode for better performance with Playwright
+    app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)
