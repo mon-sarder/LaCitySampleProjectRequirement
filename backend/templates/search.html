@@ -188,8 +188,7 @@
         drawCategories(cats);
         sessionStorage.setItem('robot_cats', JSON.stringify({ categories: cats, count: cats.length }));
         setText($('#catsStatus'), `Loaded ${cats.length}`);
-        $('#catsJson').textContent = JSON.stringify(r.data, null, 2);
-        show($('#catsJson'), true);
+        // Don't show JSON output - just the category buttons
       } else {
         setText($('#catsStatus'), `Error (${r.status})`);
         $('#catsJson').textContent = JSON.stringify(r.data, null, 2);
@@ -217,6 +216,7 @@
         });
         wrap.appendChild(chip);
       });
+      // FIXED: Don't show the raw JSON output - only show clickable category buttons
     }
   </script>
 </body>

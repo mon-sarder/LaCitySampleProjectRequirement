@@ -156,7 +156,7 @@ input[type="email"]:focus {
 }
 
 /* ==========================================================================
-   Buttons
+   Buttons - FIXED: Better contrast for all button types
    ========================================================================== */
 button,
 .button {
@@ -164,7 +164,7 @@ button,
   -webkit-appearance: none;
   cursor: pointer;
   border: 1px solid var(--border-strong);
-  background: #f6f7f8;
+  background: #ffffff;
   color: var(--fg);
   padding: 10px 14px;
   border-radius: var(--radius-md);
@@ -189,9 +189,18 @@ button.primary,
   color: var(--accent-ink);
 }
 
+button.primary:hover {
+  background: #0856e0;
+}
+
 button.ghost {
-  background: transparent;
+  background: #f6f7f8;
   border-color: var(--border);
+  color: var(--fg);
+}
+
+button.ghost:hover {
+  background: #e8e9ea;
 }
 
 button.link {
@@ -224,7 +233,7 @@ button.danger {
   padding: 6px 10px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: var(--chip-bg);
+  background: #f6f7f8;
   color: var(--fg);
   font-size: 13px;
   cursor: pointer;
@@ -232,8 +241,8 @@ button.danger {
 }
 
 .chip:hover {
-  background: #f0f0f0;
-  border-color: var(--border);
+  background: #e8e9ea;
+  border-color: #999;
 }
 
 .chip:active {
@@ -251,13 +260,15 @@ button.danger {
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  background: var(--chip-bg);
+  background: #f6f7f8;
   color: var(--fg);
   text-decoration: none;
   font-size: 13px;
+  font-weight: 500;
 }
 .category-list a:hover {
-  background: #f0f0f0;
+  background: #e8e9ea;
+  border-color: #999;
 }
 
 /* ==========================================================================
@@ -373,8 +384,35 @@ pre {
     color: var(--fg);
     border-color: var(--border-strong);
   }
-  button { background: #151922; border-color: var(--border-strong); color: var(--fg); }
-  button:hover { background: #1a2030; }
-  .chip { background: #141824; border-color: var(--border-strong); }
-  .chip:hover { background: #182031; }
+  button {
+    background: #1a1d24;
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+  button:hover { background: #22252e; }
+  button.ghost {
+    background: #151922;
+    color: var(--fg);
+  }
+  button.ghost:hover {
+    background: #1a2030;
+  }
+  .chip {
+    background: #1a1d24;
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+  .chip:hover {
+    background: #22252e;
+    border-color: #444;
+  }
+  .category-list a {
+    background: #1a1d24;
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+  .category-list a:hover {
+    background: #22252e;
+    border-color: #444;
+  }
 }
