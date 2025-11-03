@@ -6,13 +6,14 @@ import requests
 from mcp.server.fastmcp import FastMCP
 
 BASE_URL = os.environ.get("ROBOT_BASE_URL", "http://localhost:5001")
-API_KEY  = os.environ.get("ROBOT_API_KEY", "secret123")
+API_KEY = os.environ.get("ROBOT_API_KEY", "secret123")
 
 HEADERS = {"Content-Type": "application/json"}
 if API_KEY:
     HEADERS["X-API-Key"] = API_KEY
 
 app = FastMCP("RobotDriver")
+
 
 @app.tool()
 def check_health() -> dict:
@@ -30,6 +31,7 @@ def check_health() -> dict:
             "status": "error",
             "message": f"Health check failed: {str(e)}"
         }
+
 
 @app.tool()
 def run_goal(goal: str, planner: str = "builtin") -> dict:
@@ -49,13 +51,28 @@ def run_goal(goal: str, planner: str = "builtin") -> dict:
             "message": f"Goal execution failed: {str(e)}"
         }
 
+
 @app.tool()
-def search_product(product: str) -> dict:
+def search_product(product: str, limit: int = 10) -> dict:
     """
     Call /search-json to run the Playwright 'search product' flow.
+
+    Args:
+        product: The category or product name to search for
+        limit: Maximum number of results to return (default: 10, max: 50)
+
+    Returns:
+        JSON response with search results including items, status, and metadata
     """
     url = f"{BASE_URL}/search-json"
-    payload = {"product": product}
+
+    # Enforce reasonable limits (max 50 items)
+    if limit < 1:
+        limit = 10
+    elif limit > 50:
+        limit = 50
+
+    payload = {"product": product, "limit": limit}
     try:
         r = requests.post(url, headers=HEADERS, data=json.dumps(payload), timeout=60)
         r.raise_for_status()
@@ -66,6 +83,7 @@ def search_product(product: str) -> dict:
             "message": f"Search failed: {str(e)}",
             "items": []
         }
+
 
 @app.tool()
 def list_categories() -> dict:
@@ -83,6 +101,7 @@ def list_categories() -> dict:
             "message": f"Failed to list categories: {str(e)}",
             "categories": []
         }
+
 
 if __name__ == "__main__":
     # Runs an MCP server over stdio for Claude Desktop.
