@@ -27,8 +27,8 @@ COPY . .
 # Expose Flask port
 EXPOSE 5001
 
-# Healthcheck with better error handling
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+# Healthcheck with better error handling and longer startup time
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health', timeout=5)" || exit 1
 
 # Run with Flask's built-in server (perfect for development)
