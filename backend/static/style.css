@@ -163,9 +163,9 @@ button,
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
-  border: 1px solid var(--border-strong);
-  background: #ffffff;
-  color: var(--fg);
+  border: 1px solid #2c3e50;
+  background: #2c3e50;
+  color: #ffffff;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   font-weight: 600;
@@ -174,7 +174,7 @@ button,
 
 button:hover,
 .button:hover {
-  background: #f0f1f2;
+  background: #34495e;
 }
 
 button:active,
@@ -184,9 +184,9 @@ button:active,
 
 button.primary,
 .button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: #0a63ff;
+  border-color: #0a63ff;
+  color: #ffffff;
 }
 
 button.primary:hover {
@@ -194,13 +194,13 @@ button.primary:hover {
 }
 
 button.ghost {
-  background: #f6f7f8;
-  border-color: var(--border);
-  color: var(--fg);
+  background: #34495e;
+  border-color: #2c3e50;
+  color: #ffffff;
 }
 
 button.ghost:hover {
-  background: #e8e9ea;
+  background: #2c3e50;
 }
 
 button.link {
@@ -385,17 +385,17 @@ pre {
     border-color: var(--border-strong);
   }
   button {
-    background: #1a1d24;
-    border-color: var(--border-strong);
-    color: var(--fg);
+    background: #2c3e50;
+    border-color: #2c3e50;
+    color: #ffffff;
   }
-  button:hover { background: #22252e; }
+  button:hover { background: #34495e; }
   button.ghost {
-    background: #151922;
-    color: var(--fg);
+    background: #34495e;
+    color: #ffffff;
   }
   button.ghost:hover {
-    background: #1a2030;
+    background: #2c3e50;
   }
   .chip {
     background: #1a1d24;
