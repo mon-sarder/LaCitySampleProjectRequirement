@@ -14,10 +14,11 @@ Public API:
 
 import re
 import asyncio
+import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError
 
 # Reuse the same UA as robot_driver; fall back if not importable.
 try:
@@ -65,94 +66,194 @@ async def _builtin_executor(goal: str, headless: bool = True) -> Dict[str, Any]:
     """
     goal_l = goal.lower()
 
-    async with _fast_ctx(headless=headless) as (_b, _c, page):
-        base = "http://localhost:5001"
+    # Special case: health check requests
+    if "health" in goal_l and ("check" in goal_l or "api" in goal_l or "/api/health" in goal_l):
+        return {
+            "status": "noop",
+            "message": "Health checks should use the dedicated /api/health endpoint or check_health MCP tool",
+            "url": "http://localhost:5001/api/health"
+        }
 
-        # 1) decide landing page
-        if "/search" in goal_l:
-            target = f"{base}/search"
-        elif "/demo" in goal_l:
-            target = f"{base}/demo"
-        else:
-            # prefer search (protected page) so we can test full flow after login if needed
-            target = f"{base}/search"
+    try:
+        async with _fast_ctx(headless=headless) as (_b, _c, page):
+            base = "http://localhost:5001"
 
-        await _goto(page, target)
+            # 1) decide landing page
+            if "/search" in goal_l:
+                target = f"{base}/search"
+            elif "/demo" in goal_l:
+                target = f"{base}/demo"
+            else:
+                # prefer search (protected page) so we can test full flow after login if needed
+                target = f"{base}/search"
 
-        # 2) If login page appears, use default admin creds (your app creates them)
-        if "login" in (page.url or "") or (await page.locator('input[name="username"]').count() and await page.locator('button[type="submit"]').count()):
             try:
-                await page.fill('input[name="username"]', "admin")
-                await page.fill('input[name="password"]', "admin123")
-                await page.click('button[type="submit"]')
-                # After login, we should land on /search
-                await page.wait_for_load_state("domcontentloaded")
-            except Exception:
-                pass  # continue anyway
+                await _goto(page, target)
+            except PWTimeoutError:
+                return {
+                    "status": "error",
+                    "message": f"Timeout navigating to {target}",
+                    "url": target
+                }
 
-        # 3) list categories if asked
-        if "list categories" in goal_l or "all categories" in goal_l:
-            btn = page.locator('button[name="list_all"]')
-            if await btn.count():
-                await btn.click()
-                await page.wait_for_load_state("domcontentloaded")
-            # read category chips (server renders anchors with class 'category-chip' in index.html)
-            chips = page.locator(".category-list a")
-            cats = [c.strip() for c in await chips.all_inner_texts()] if await chips.count() else []
-            return {"status": "success", "action": "list_categories", "categories": cats}
+            # 2) If login page appears, use default admin creds (your app creates them)
+            try:
+                if "login" in (page.url or "").lower():
+                    username_input = page.locator('input[name="username"]')
+                    password_input = page.locator('input[name="password"]')
+                    submit_btn = page.locator('button[type="submit"]')
 
-        # 4) extract desired category from goal, e.g., "travel", "science"
-        m = re.search(r"(?:category|search)\s+(?:for\s+)?['\"]?([a-zA-Z ]+)['\"]?", goal_l)
-        desired = m.group(1).strip() if m else None
+                    if await username_input.count() and await password_input.count() and await submit_btn.count():
+                        await username_input.fill("admin")
+                        await password_input.fill("admin123")
+                        await submit_btn.click()
+                        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception as e:
+                # Continue anyway - might already be logged in
+                pass
 
-        if desired:
-            # try the plain search bar first
-            if await page.locator('input[name="query"]').count():
-                await page.fill('input[name="query"]', desired)
-                if await page.locator('button[type="submit"]').count():
-                    await page.click('button[type="submit"]')
-                    await page.wait_for_load_state("domcontentloaded")
+            # 3) list categories if asked
+            if "list" in goal_l and "categor" in goal_l:
+                btn = page.locator('button:has-text("Show categories"), button[name="list_all"]')
+                try:
+                    if await btn.count():
+                        await btn.first.click()
+                        await page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Exception:
+                    pass
 
-            # If the page shows "Available categories", click the closest chip if rendered
-            choices = page.locator(".category-list a")
-            if await choices.count():
-                # pick the first chip that fuzzy matches desired
-                texts = await choices.all_inner_texts()
-                pick_idx = None
-                d = desired.lower()
-                for idx, t in enumerate(texts):
-                    if d in t.lower():
-                        pick_idx = idx
-                        break
-                if pick_idx is None and texts:
-                    pick_idx = 0  # fall back to first
-                if pick_idx is not None:
-                    await choices.nth(pick_idx).click()
-                    await page.wait_for_load_state("domcontentloaded")
+                # Read category chips/buttons
+                chips = page.locator(".category-list a, .chips .chip, .category-chip")
+                try:
+                    if await chips.count():
+                        cats = []
+                        count = await chips.count()
+                        for i in range(min(count, 100)):  # Limit to prevent hanging
+                            text = await chips.nth(i).inner_text()
+                            cats.append(text.strip())
+                        return {
+                            "status": "success",
+                            "action": "list_categories",
+                            "categories": cats,
+                            "count": len(cats)
+                        }
+                except Exception as e:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to read categories: {str(e)}",
+                        "categories": []
+                    }
 
-        # 5) gather first few items if present
-        if await page.locator(".product_pod").count():
-            titles = await page.locator(".product_pod h3 a").all_inner_texts()
-            prices = await page.locator(".price_color").all_inner_texts()
-            items = [{"title": t.strip(), "price": p.strip()} for t, p in zip(titles, prices)]
-            return {"status": "success", "action": "collect_items", "count": len(items), "items": items[:5]}
+            # 4) extract desired category from goal, e.g., "travel", "science"
+            m = re.search(r"(?:category|search|find|show)\s+(?:for\s+)?['\"]?([a-zA-Z ]+)['\"]?", goal_l)
+            desired = m.group(1).strip() if m else None
 
-        # Nothing matched
-        return {"status": "noop", "message": "No items found or goal too vague.", "url": page.url}
+            if desired:
+                # Try the plain search bar first
+                query_input = page.locator('input[name="query"]')
+                if await query_input.count():
+                    try:
+                        await query_input.fill(desired)
+                        submit = page.locator('button[type="submit"]')
+                        if await submit.count():
+                            await submit.first.click()
+                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
+
+                # If the page shows "Available categories", click the closest chip if rendered
+                choices = page.locator(".category-list a, .chips .chip")
+                if await choices.count():
+                    try:
+                        # Pick the first chip that fuzzy matches desired
+                        texts = []
+                        count = await choices.count()
+                        for i in range(min(count, 100)):
+                            t = await choices.nth(i).inner_text()
+                            texts.append(t)
+
+                        pick_idx = None
+                        d = desired.lower()
+                        for idx, t in enumerate(texts):
+                            if d in t.lower():
+                                pick_idx = idx
+                                break
+                        if pick_idx is None and texts:
+                            pick_idx = 0  # Fall back to first
+
+                        if pick_idx is not None:
+                            await choices.nth(pick_idx).click()
+                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
+
+            # 5) Gather first few items if present (Books to Scrape format)
+            pods = page.locator(".product_pod, article.product_pod")
+            if await pods.count():
+                try:
+                    items = []
+                    count = await pods.count()
+                    for i in range(min(count, 10)):  # Limit to first 10
+                        pod = pods.nth(i)
+                        title_elem = pod.locator("h3 a, .product_pod h3 a")
+                        price_elem = pod.locator(".price_color")
+
+                        if await title_elem.count() and await price_elem.count():
+                            title = await title_elem.first.get_attribute("title")
+                            if not title:
+                                title = await title_elem.first.inner_text()
+                            price = await price_elem.first.inner_text()
+                            items.append({
+                                "title": title.strip(),
+                                "price": price.strip()
+                            })
+
+                    if items:
+                        return {
+                            "status": "success",
+                            "action": "collect_items",
+                            "count": len(items),
+                            "items": items,
+                            "url": page.url
+                        }
+                except Exception as e:
+                    pass
+
+            # Nothing matched or found
+            return {
+                "status": "noop",
+                "message": "No items found or goal too vague.",
+                "url": page.url
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Executor error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 
 # ---------------------- Public API ----------------------
 
 def run_ai_goal(goal: str, planner: str = "builtin", headless: bool = True) -> Dict[str, Any]:
     """
-    Entry point called by Flask /mcp/run.
+    Entry point called by Flask /api/run.
     - planner='builtin' runs a fast, single-session executor (recommended)
     - in future you could wire other planners that emit steps
     """
+
     async def _run():
         if planner == "builtin":
             return await _builtin_executor(goal, headless=headless)
         # Fallback: still do builtin to keep UX snappy
         return await _builtin_executor(goal, headless=headless)
 
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to run goal: {str(e)}",
+            "traceback": traceback.format_exc()
+        }

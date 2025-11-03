@@ -2,7 +2,7 @@
 import os
 import sqlite3
 import traceback
-from datetime import timedelta
+from datetime import timedelta, datetime
 from functools import wraps
 
 from flask import (
@@ -93,54 +93,6 @@ def make_session_permanent():
 # ------------------------------------------------------------------------------
 # DB Helpers
 # ------------------------------------------------------------------------------
-
-def _normalize_search_payload(raw: dict, requested_category: str) -> dict:
-    """
-    Ensure the /search-json response always returns the new shape:
-      { agent, status, category, items: [..], meta: {...} }
-    If the old shape appears (single top-level title/price), coerce it.
-    """
-    if not isinstance(raw, dict):
-        return {
-            "agent": "BroncoMCP/1.0",
-            "status": "error",
-            "category": requested_category,
-            "items": [],
-            "meta": {"note": "Non-dict payload from driver; normalized to empty list"}
-        }
-
-    # If it already has "items" and it's a list, just pass through
-    if isinstance(raw.get("items"), list):
-        return raw
-
-    # Legacy/flat shape: title/price/meta (string)
-    title = raw.get("title")
-    price = raw.get("price")
-    status = raw.get("status", "success")
-    agent = raw.get("agent", "BroncoMCP/1.0")
-
-    # If we have a single item, wrap it into a list
-    if title:
-        items = [{"title": title, "price": price}]
-    else:
-        items = []
-
-    # Try to convert meta when it's a string like "Category: Travel"
-    meta = raw.get("meta")
-    meta_out = {}
-    if isinstance(meta, dict):
-        meta_out = meta
-    elif isinstance(meta, str):
-        meta_out = {"legacy_meta": meta}
-
-    return {
-        "agent": agent,
-        "status": status,
-        "category": raw.get("category") or requested_category,
-        "items": items,
-        "meta": meta_out | {"normalized": True}
-    }
-
 
 def init_db():
     try:
@@ -241,6 +193,20 @@ def auth_or_api_key_ok() -> bool:
     return False
 
 
+def _bad_request(msg: str, extra: dict = None, code: int = 400):
+    """Helper for uniform client errors with better debugging info"""
+    payload = {
+        "status": "error",
+        "message": msg,
+        "agent": "BroncoMCP/1.0"
+    }
+    if extra:
+        payload["details"] = extra
+    if app.debug:  # Only in debug mode
+        payload["timestamp"] = datetime.now().isoformat()
+    return jsonify(payload), code
+
+
 # ------------------------------------------------------------------------------
 # Routes: pages
 # ------------------------------------------------------------------------------
@@ -294,7 +260,7 @@ def register():
         if not username or not password:
             flash("Please fill out all fields.", "error")
         elif get_user(username):
-            flash("Username already exists. Try logging in.", "error")
+            flash("Username already exists.", "error")
         elif password != confirm:
             flash("Passwords do not match.", "error")
         else:
@@ -312,7 +278,7 @@ def register():
 @app.route("/logout")
 def logout():
     session.pop("user", None)
-    flash("Logged out successfully.", "info")
+    flash("Logged out.", "info")
     return redirect(url_for("login"))
 
 
@@ -386,10 +352,19 @@ def categories_json():
             browser.close()
         # De-duplicate / clean
         cats = [c for c in (cats or []) if c]
-        return jsonify({"status": "success", "count": len(cats), "categories": cats}), 200
+        return jsonify({
+            "status": "success",
+            "count": len(cats),
+            "categories": cats,
+            "agent": "BroncoMCP/1.0"
+        }), 200
     except Exception as e:
         app.logger.exception("categories.json failed")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "agent": "BroncoMCP/1.0"
+        }), 500
 
 
 @app.route("/search-json", methods=["POST"])
@@ -424,7 +399,7 @@ def search_json():
 
     # --- Call your scraper ---
     try:
-        data = search_product(category)
+        data = search_product(category, limit=limit if limit > 0 else 10)
 
         # Normalize the shape we expect
         items = data.get("items", [])
@@ -449,7 +424,7 @@ def search_json():
 
     except Exception as e:
         # Fallback: safe empty result with error info
-        print(f"[search-json] scraper error: {e}")
+        app.logger.exception("search-json scraper error")
         return jsonify({
             "agent": "BroncoMCP/1.0",
             "status": "error",
@@ -493,7 +468,13 @@ def login_test():
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    return jsonify({"status": "ok", "agent": "BroncoMCP/1.0"}), 200
+    """Health check endpoint - accessible without authentication for monitoring"""
+    return jsonify({
+        "status": "ok",
+        "agent": "BroncoMCP/1.0",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    }), 200
 
 
 # --- /api/run: tolerant goal/steps runner for MCP "run_goal" ------------------
@@ -518,14 +499,7 @@ def api_run():
     # ---- parse safely
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
-        return jsonify({"status": "error", "message": "Body must be a JSON object."}), 400
-
-    # tiny helper for uniform client errors
-    def bad(msg, extra=None, code=400):
-        payload = {"status": "error", "message": msg}
-        if extra:
-            payload["details"] = extra
-        return jsonify(payload), code
+        return _bad_request("Body must be a JSON object.")
 
     # Accept multiple shapes: goal / navigate / steps
     goal = (data.get("goal") or "").strip()
@@ -548,7 +522,7 @@ def api_run():
             from mcp_agent import run_ai_goal  # lazy import to keep startup fast
             result = run_ai_goal(goal=goal, planner=planner, headless=headless)
             return jsonify({
-                "status": "success" if result.get("status") == "success" else "ok",
+                "status": "ok",  # Always return 200 with ok status, errors are in result
                 "agent": "BroncoMCP/1.0",
                 "planner": planner,
                 "result": result,
@@ -557,8 +531,11 @@ def api_run():
             app.logger.exception("run_ai_goal failed")
             return jsonify({
                 "status": "error",
+                "agent": "BroncoMCP/1.0",
                 "message": f"run_ai_goal failed: {e.__class__.__name__}",
-            }), 500
+                "details": str(e),
+                "traceback": traceback.format_exc() if app.debug else None
+            }), 200  # Still return 200 to avoid breaking MCP clients
 
     # case B: explicit navigate/url → do a minimal Playwright nav (fast)
     if navigate_url:
@@ -580,7 +557,7 @@ def api_run():
             }), 200
         except Exception as e:
             app.logger.exception("navigate failed")
-            return bad("Navigation failed", {"error": str(e)}, code=502)
+            return _bad_request("Navigation failed", {"error": str(e)}, code=200)
 
     # case C: a list of steps → implement a tiny dispatcher (support 'navigate' now)
     if isinstance(steps, list):
@@ -610,10 +587,10 @@ def api_run():
             }), 200
         except Exception as e:
             app.logger.exception("steps execution failed")
-            return bad("Steps execution failed", {"error": str(e)}, code=502)
+            return _bad_request("Steps execution failed", {"error": str(e)}, code=200)
 
     # if we got here, payload was understood but incomplete
-    return bad(
+    return _bad_request(
         "Invalid payload for /api/run. Provide one of: "
         "{goal: string} | {navigate: url} | {steps: [ ... ]}",
         extra={"received_keys": list(data.keys())}
@@ -625,11 +602,23 @@ def api_run():
 # ------------------------------------------------------------------------------
 @app.errorhandler(404)
 def _404(_e):
+    if request.path.startswith('/api/'):
+        return jsonify({
+            "status": "error",
+            "message": "Endpoint not found",
+            "agent": "BroncoMCP/1.0"
+        }), 404
     return render_template("login.html"), 404
 
 
 @app.errorhandler(500)
 def _500(_e):
+    if request.path.startswith('/api/'):
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "agent": "BroncoMCP/1.0"
+        }), 500
     return render_template("login.html"), 500
 
 
@@ -648,6 +637,7 @@ if __name__ == "__main__":
     print(f"🗄️  Database: {DB_PATH}")
     print(f"🔐 Admin seeding: {'ENABLED' if SEED_ADMIN else 'DISABLED'}")
     print(f"🔑 API Key required: {'YES' if REQUIRED_API_KEY else 'NO'}")
+    print(f"🛡️  CSP Mode: {'RELAXED' if RELAXED_CSP else 'STRICT'}")
     print("-" * 50)
 
     init_db()
@@ -655,7 +645,8 @@ if __name__ == "__main__":
 
     print("\n✅ Server ready!")
     print("📍 Access at: http://localhost:5001")
-    print("🔓 Login with: admin / admin123\n")
+    print("🔓 Login with: admin / admin123")
+    print("🏥 Health check: http://localhost:5001/api/health\n")
 
     # Use threaded mode for better performance with Playwright
     app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

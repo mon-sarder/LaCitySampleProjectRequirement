@@ -8,6 +8,9 @@ import re
 BOOKS_ROOT = "https://books.toscrape.com/"
 AGENT_NAME = "BroncoMCP/1.0"
 
+# Custom UA - can be overridden
+CUSTOM_UA = "BroncoBot/1.0 (+https://github.com/mon-sarder/BroncoFit)"
+
 def _clean(text: str) -> str:
     """Normalize whitespace and trim text safely."""
     return re.sub(r"\s+", " ", (text or "").strip())
@@ -20,12 +23,12 @@ def list_categories() -> dict:
       "agent": "BroncoMCP/1.0",
       "status": "success",
       "categories": ["Travel", "Mystery", ...],
-      "meta": {"count": 50}
+      "count": 50
     }
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = browser.new_context(user_agent=CUSTOM_UA)
         page = context.new_page()
         try:
             page.goto(BOOKS_ROOT, timeout=12000, wait_until="domcontentloaded")
@@ -36,14 +39,23 @@ def list_categories() -> dict:
                 "agent": AGENT_NAME,
                 "status": "success",
                 "categories": cats,
-                "meta": {"count": len(cats)}
+                "count": len(cats)
             }
         except PWTimeoutError:
             return {
                 "agent": AGENT_NAME,
                 "status": "error",
                 "categories": [],
+                "count": 0,
                 "meta": {"note": "Timeout while fetching categories"}
+            }
+        except Exception as e:
+            return {
+                "agent": AGENT_NAME,
+                "status": "error",
+                "categories": [],
+                "count": 0,
+                "meta": {"note": f"Error: {str(e)}"}
             }
         finally:
             browser.close()
@@ -93,7 +105,7 @@ def search_product(product: str, limit: int = 10) -> dict:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = browser.new_context(user_agent=CUSTOM_UA)
         page = context.new_page()
         try:
             # 1) Home
@@ -109,14 +121,15 @@ def search_product(product: str, limit: int = 10) -> dict:
                 cats = [_clean(links.nth(i).inner_text()) for i in range(n)]
                 return {
                     "agent": AGENT_NAME,
-                    "status": "no_match",
+                    "status": "choices",
                     "category": category_query,
                     "items": [],
+                    "categories": cats,
+                    "message": f"No close category match for '{category_query}'. Pick one of the available categories.",
                     "meta": {
                         "count": 0,
                         "available": 0,
-                        "categories": cats,
-                        "note": "No close category match; returning available categories."
+                        "note": "No category match found"
                     }
                 }
 
@@ -129,7 +142,8 @@ def search_product(product: str, limit: int = 10) -> dict:
 
             for i in range(total_on_page):
                 art = pods.nth(i)
-                title = _clean(art.locator("h3 a").get_attribute("title") or "")
+                title_elem = art.locator("h3 a")
+                title = _clean(title_elem.get_attribute("title") or title_elem.inner_text())
                 price = _clean(art.locator(".price_color").inner_text())
                 if title:
                     items.append({"title": title, "price": price})
@@ -155,6 +169,14 @@ def search_product(product: str, limit: int = 10) -> dict:
                 "category": category_query,
                 "items": [],
                 "meta": {"note": "Timeout during navigation or scraping"}
+            }
+        except Exception as e:
+            return {
+                "agent": AGENT_NAME,
+                "status": "error",
+                "category": category_query,
+                "items": [],
+                "meta": {"note": f"Error: {str(e)}"}
             }
         finally:
             browser.close()

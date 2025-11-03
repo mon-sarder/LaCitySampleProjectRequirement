@@ -8,8 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 # Optional CSP relaxation and API key defaults (can be overridden at runtime)
-ENV RELAXED_CSP=0 \
-    API_KEY=""
+ENV RELAXED_CSP=1 \
+    API_KEY="secret123" \
+    ADMIN_DEFAULT=1
 
 # Workdir
 WORKDIR /app
@@ -26,9 +27,9 @@ COPY . .
 # Expose Flask port
 EXPOSE 5001
 
-# Healthcheck (optional but helpful)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health')" || exit 1
+# Healthcheck with better error handling
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health', timeout=5)" || exit 1
 
 # Run with Flask's built-in server (perfect for development)
 CMD ["python", "app.py"]
