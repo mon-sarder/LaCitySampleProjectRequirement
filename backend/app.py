@@ -325,21 +325,70 @@ def categories_json():
 @app.route("/search-json", methods=["POST"])
 def search_json():
     """
-    JSON endpoint for search (Books to Scrape). Requires login or API key.
+    JSON API for product/category search used by MCP.
+    - Accepts {"product": "..."} or {"category": "..."}
+    - Always returns an 'items' list (never null/missing)
+    - Includes 'status', 'agent', 'category', 'meta'
+    - On scraper failure, returns items=[]
     """
-    if not auth_or_api_key_ok():
-        return jsonify({"status": "error", "message": "Unauthorized"}), 401
-
     try:
-        data = request.get_json(force=True)
-    except BadRequest:
-        return jsonify({"status": "error", "message": "Invalid JSON format."}), 400
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
+        body = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        body = {}
 
-    product_name = (data.get("product") or "").strip()
-    result = search_product(product_name)
-    return jsonify(result), 200 if result.get("status") == "success" else 500
+    # Accept both keys
+    category = (body.get("product") or body.get("category") or "").strip()
+    limit = body.get("limit", 0)
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 0
+
+    if not category:
+        return jsonify({
+            "agent": "BroncoMCP/1.0",
+            "status": "error",
+            "message": "Missing 'product' or 'category' in JSON payload.",
+            "items": []
+        }), 400
+
+    # --- Call your scraper ---
+    try:
+        from robot_driver import search_product  # local import to avoid import cost on boot
+        data = search_product(category)
+
+        # Normalize the shape we expect
+        items = data.get("items", [])
+        if isinstance(items, dict):
+            items = [items]
+        elif not isinstance(items, list):
+            items = []
+
+        # Optional limit
+        if limit and limit > 0:
+            items = items[:limit]
+
+        meta = data.get("meta", {})
+        out = {
+            "agent": data.get("agent", "BroncoMCP/1.0"),
+            "status": data.get("status", "success"),
+            "category": data.get("category", category),
+            "items": items,
+            "meta": meta
+        }
+        return jsonify(out), 200
+
+    except Exception as e:
+        # Fallback: safe empty result with error info
+        print(f"[search-json] scraper error: {e}")
+        return jsonify({
+            "agent": "BroncoMCP/1.0",
+            "status": "error",
+            "category": category,
+            "message": str(e),
+            "items": [],
+            "meta": {"note": "scraper failure; returned empty list"}
+        }), 200
 
 
 @app.route("/login-test", methods=["POST"])
