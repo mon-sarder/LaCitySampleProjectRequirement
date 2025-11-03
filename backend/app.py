@@ -375,6 +375,7 @@ def search_json():
     - Always returns an 'items' list (never null/missing)
     - Includes 'status', 'agent', 'category', 'meta'
     - On scraper failure, returns items=[]
+    - When no match found (status="choices"), includes 'categories' array
     """
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -413,6 +414,8 @@ def search_json():
             items = items[:limit]
 
         meta = data.get("meta", {})
+
+        # Build base response
         out = {
             "agent": data.get("agent", "BroncoMCP/1.0"),
             "status": data.get("status", "success"),
@@ -420,6 +423,12 @@ def search_json():
             "items": items,
             "meta": meta
         }
+
+        # IMPORTANT: If status is "choices", include the categories array
+        if data.get("status") == "choices" and "categories" in data:
+            out["categories"] = data["categories"]
+            out["message"] = data.get("message", f"No match for '{category}'")
+
         return jsonify(out), 200
 
     except Exception as e:
