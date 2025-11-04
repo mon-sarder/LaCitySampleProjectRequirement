@@ -87,24 +87,59 @@ venv\Scripts\activate
 ```
 
 ### Step 3: Install Python Dependencies
+
+**Note:** If `pip install -r requirements.txt` doesn't work, install each package individually:
 ```bash
 # Upgrade pip first
 pip install --upgrade pip
 
-# Install all required packages
-pip install -r requirements.txt
+# Core Framework
+pip install Flask==3.0.0
+pip install itsdangerous
+pip install Jinja2
+pip install Werkzeug
+pip install click
+
+# Web Automation / Scraping
+pip install playwright==1.48.0
+pip install requests
+
+# MCP Server
+pip install mcp
+
+# Claude API (Anthropic)
+pip install anthropic
+
+# Environment Variables
+pip install python-dotenv
+
+# Rate Limiting (optional)
+pip install flask-limiter
 
 # Install Playwright browsers
 playwright install chromium
 ```
 
-**What gets installed:**
-- Flask 3.0.0 - Web framework
-- Playwright 1.48.0 - Browser automation
-- Anthropic SDK - Claude API integration
-- python-dotenv - Environment variable management
-- mcp - Model Context Protocol server
-- And other dependencies (see `requirements.txt`)
+**Alternative (if pip install -r works for you):**
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+**Verify installation:**
+```bash
+# Check installed packages
+pip list | grep -E "Flask|playwright|anthropic|mcp|python-dotenv"
+```
+
+You should see:
+```
+anthropic       0.18.1
+Flask           3.0.0
+mcp             0.9.0
+playwright      1.48.0
+python-dotenv   1.0.0
+```
 
 ---
 
@@ -442,8 +477,13 @@ backend/
 # Make sure virtual environment is activated
 source venv/bin/activate
 
-# Reinstall dependencies
-pip install -r requirements.txt
+# Install the missing module individually
+pip install <module-name>
+
+# For example:
+pip install anthropic
+pip install flask
+pip install playwright
 ```
 
 #### 2. "Port 5001 already in use"
@@ -501,6 +541,21 @@ cat .gitignore | grep .env
 python3 -c "from dotenv import load_dotenv; import os; load_dotenv(); print(os.getenv('API_KEY'))"
 ```
 
+#### 7. "pip install -r requirements.txt" not working
+```bash
+# Install packages individually (see Step 3 of Installation)
+pip install Flask==3.0.0
+pip install playwright==1.48.0
+pip install anthropic
+pip install mcp
+pip install python-dotenv
+pip install requests
+pip install flask-limiter
+
+# Then install Playwright browsers
+playwright install chromium
+```
+
 ---
 
 ## 📖 Additional Resources
@@ -550,7 +605,16 @@ git clone https://github.com/mon-sarder/LaCitySampleProjectRequirement.git
 cd LaCitySampleProjectRequirement/backend
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+
+# Install dependencies individually
+pip install --upgrade pip
+pip install Flask==3.0.0
+pip install playwright==1.48.0
+pip install anthropic
+pip install mcp
+pip install python-dotenv
+pip install requests
+pip install flask-limiter
 playwright install chromium
 
 # Configure
